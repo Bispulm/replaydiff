@@ -1,0 +1,10 @@
+# Build output
+/bin/
+/dist/
+*.test
+*.out
+*.prof
+
+# Local demo and benchmark output
+/.demo/
+/.bench/
