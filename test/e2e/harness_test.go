@@ -67,7 +67,9 @@ type process struct {
 	mu   sync.Mutex
 	logs strings.Builder
 	addr chan string
-	done chan error
+	// done is closed once the process has exited and waitErr is set.
+	done    chan struct{}
+	waitErr error
 }
 
 var listenAddr = regexp.MustCompile(`addr=(127\.0\.0\.1:\d+)`)
@@ -81,7 +83,7 @@ func start(t *testing.T, env []string, name string, args ...string) *process {
 		t.Fatal(err)
 	}
 	cmd.Stdout = io.Discard
-	p := &process{cmd: cmd, addr: make(chan string, 1), done: make(chan error, 1)}
+	p := &process{cmd: cmd, addr: make(chan string, 1), done: make(chan struct{})}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +104,8 @@ func start(t *testing.T, env []string, name string, args ...string) *process {
 	})
 	go func() {
 		drained.Wait()
-		p.done <- cmd.Wait()
+		p.waitErr = cmd.Wait()
+		close(p.done)
 	}()
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
@@ -126,15 +129,15 @@ func (p *process) baseURL(t *testing.T) string {
 	}
 }
 
-// stop sends SIGTERM and waits for a clean exit.
+// stop sends an interrupt and waits for the process to exit.
 func (p *process) stop(t *testing.T) error {
 	t.Helper()
 	if err := p.cmd.Process.Signal(os.Interrupt); err != nil {
 		t.Fatal(err)
 	}
 	select {
-	case err := <-p.done:
-		return err
+	case <-p.done:
+		return p.waitErr
 	case <-time.After(30 * time.Second):
 		t.Fatalf("process did not exit; logs:\n%s", p.output())
 		return nil
