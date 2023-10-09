@@ -62,7 +62,7 @@ func (h *segmentHeader) marshal() []byte {
 	copy(buf[12:], h.sync[:])
 	copy(buf[20:], h.runID[:])
 	binary.BigEndian.PutUint32(buf[36:], h.index)
-	binary.BigEndian.PutUint64(buf[40:], uint64(h.created.UnixNano())) //nolint:gosec // Round-trips as two's complement.
+	binary.BigEndian.PutUint64(buf[40:], uint64(h.created.UnixNano()))
 	binary.BigEndian.PutUint32(buf[48:], crc32.Checksum(buf[:48], castagnoli))
 	return buf
 }
@@ -149,7 +149,7 @@ func (e *Encoder) Encode(rec *Record) (Frame, error) {
 	}
 	return Frame{
 		stored: stored,
-		rawLen: uint32(buf.Len()), //nolint:gosec // Bounded by maxRecordBytes.
+		rawLen: uint32(buf.Len()),
 		crc:    crc32.Checksum(stored, castagnoli),
 		codec:  codecZstd,
 	}, nil
@@ -170,7 +170,7 @@ func footerFrame(f footer) (Frame, error) {
 	}
 	return Frame{
 		stored: data,
-		rawLen: uint32(len(data)), //nolint:gosec // A small fixed-shape struct.
+		rawLen: uint32(len(data)),
 		crc:    crc32.Checksum(data, castagnoli),
 		codec:  codecNone,
 	}, nil
