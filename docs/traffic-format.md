@@ -55,8 +55,10 @@ in exchange a damaged record can't affect any other.
 ### Footer
 
 The last frame of a sealed segment. Its payload is
-`{"record_count": N, "final": bool}`. `final` is true on the last segment of a
-run that shut down cleanly.
+`{"record_count": N, "final": bool, "drops": {"reason": N}}`. `final` is true on
+the last segment of a run that shut down cleanly. `drops` counts exchanges that
+capture never recorded, by reason, and appears only on a final footer. Those
+records are absent rather than damaged, so readers report them as a coverage gap.
 
 ## Record
 
