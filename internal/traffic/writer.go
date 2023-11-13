@@ -35,7 +35,9 @@ type FS interface {
 // osFS confines all file operations to a directory.
 type osFS struct{ root *os.Root }
 
-func openOSFS(dir string) (*osFS, error) {
+// OpenDirFS returns the FS writers use by default, confined to dir, which is
+// created if needed.
+func OpenDirFS(dir string) (FS, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("traffic: create directory: %w", err)
 	}
@@ -98,7 +100,7 @@ type Writer struct {
 func NewWriter(dir string, opts WriterOptions) (*Writer, error) {
 	w := &Writer{fs: opts.FS, maxBytes: opts.MaxSegmentBytes, now: opts.Now}
 	if w.fs == nil {
-		fsys, err := openOSFS(dir)
+		fsys, err := OpenDirFS(dir)
 		if err != nil {
 			return nil, err
 		}
