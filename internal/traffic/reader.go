@@ -111,7 +111,9 @@ type Entry struct {
 	Seq        uint64
 	ID         string
 	SessionKey string
+	Protocol   Protocol
 	Method     string
+	BodyState  BodyState
 	Replay     ReplayInfo
 
 	segment int
@@ -589,7 +591,9 @@ func (s *scanner) readRecord(file io.ReaderAt, off int64, header frameHeader, se
 		Seq:        rec.Seq,
 		ID:         rec.ID,
 		SessionKey: rec.SessionKey,
+		Protocol:   rec.Protocol,
 		Method:     rec.Request.Method,
+		BodyState:  rec.Request.Body.State,
 		Replay:     rec.Replay,
 		segment:    segment,
 		offset:     off,
