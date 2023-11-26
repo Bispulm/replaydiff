@@ -62,9 +62,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runCapture(ctx, args[1:], stdout, stderr)
 	case "inspect":
 		return runInspect(args[1:], stdout, stderr)
-	case "run", "report":
-		fmt.Fprintf(stderr, "replaydiff %s: not implemented\n", args[0])
-		return ExitFailure
+	case "run":
+		return runRun(ctx, args[1:], stdout, stderr)
+	case "report":
+		return runReportCommand(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "replaydiff: unknown command %q\n\n%s", args[0], usage)
 		return ExitFailure
