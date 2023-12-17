@@ -410,6 +410,17 @@ func TestMutatingMethodRequiresExplicitOptIn(t *testing.T) {
 	}
 }
 
+// HTTP methods are case-sensitive, so "get" is not GET. A lenient server might
+// treat either spelling as whatever it likes, which a safety check can't assume.
+func TestMethodCaseIsNotNormalizedForEligibility(t *testing.T) {
+	c := newCluster(t, nil)
+	specs := []spec{{method: "get", path: "/lower"}, {method: "GeT", path: "/mixed"}}
+	summary, _ := mustRun(t, mustEngine(t, c.config()), scan(t, writeDataset(t, specs)))
+	if len(c.a.seen()) != 0 || summary.Skipped[SkipMutating] != 2 {
+		t.Fatalf("seen = %v, summary = %+v", c.a.seen(), summary)
+	}
+}
+
 func TestRecordsCaptureMarkedUnreplayableAreSkippedWithTheirReason(t *testing.T) {
 	c := newCluster(t, nil)
 	specs := []spec{
