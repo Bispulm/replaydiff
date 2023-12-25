@@ -54,7 +54,8 @@ percent-decoding, regardless of case.
 | Listed name | Value replaced with `REDACTED` |
 | Listed name inside a decoded value or name, such as `redirect=%2Fcb%3Ftoken%3Dx` or `#/cb?token=x` | Pair masked |
 | A name merely ending in a listed name, such as `mytoken=x` for rule `token` | Pair masked |
-| Malformed percent-encoding | Pair masked |
+| Malformed percent-encoding in a value | Value replaced |
+| A name that can't be decoded, or holds a listed name followed by `=` once decoded | Name and value both replaced |
 | Unparsable URL header | Whole value replaced |
 | `Link` header containing `?` | Whole value replaced |
 

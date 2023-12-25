@@ -263,6 +263,13 @@ func TestListedParameterNestedInAValueIsRedacted(t *testing.T) {
 		func(s string) string { return "redirect=/cb?token=" + s },
 		func(s string) string { return "redirect=%2Fcb%3Ftoken%3D" + s },
 		func(s string) string { return "redirect=%2Fcb%3FTOKEN%3D" + s + "&keep=1" },
+		// No literal "=", so the pair has a name and no value.
+		func(s string) string { return "x%3Ftoken%3D" + s },
+		// The covered value is in the name, so masking only the value isn't enough.
+		func(s string) string { return "x%3Ftoken%3D" + s + "=1" },
+		// A name that can't be decoded can't be trusted either.
+		func(s string) string { return "%zz%3Ftoken%3D" + s + "=1" },
+		func(s string) string { return "%zz" + s },
 	} {
 		secret := sentinel(t)
 		var hits Hits
@@ -272,8 +279,10 @@ func TestListedParameterNestedInAValueIsRedacted(t *testing.T) {
 			t.Fatalf("no hit for %q", got)
 		}
 	}
-	if got := engine.Query("note=tokens%20are%20fine", &Hits{}); got != "note=tokens%20are%20fine" {
-		t.Fatalf("over-matched: %q", got)
+	for _, unchanged := range []string{"note=tokens%20are%20fine", "token", "a=1&token&b=2"} {
+		if got := engine.Query(unchanged, &Hits{}); got != unchanged {
+			t.Fatalf("over-matched %q: %q", unchanged, got)
+		}
 	}
 }
 
