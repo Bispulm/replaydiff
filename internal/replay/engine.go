@@ -233,12 +233,14 @@ func newTarget(role Role, origin *url.URL, headers http.Header, cfg Config) *tar
 	transport := &http.Transport{
 		// Destinations are explicit. An ambient proxy variable mustn't send
 		// recorded traffic and credentials somewhere else.
-		Proxy:                 nil,
-		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		Proxy: nil,
+		// net/http silently resends a safe request if a reused connection fails,
+		// which would make one record into two calls that nothing counts. It can
+		// only do that on a reused connection, so none are reused. This costs a
+		// connection per call, paid equally by all three targets.
+		DisableKeepAlives:     true,
+		DialContext:           (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
 		TLSHandshakeTimeout:   5 * time.Second,
-		MaxIdleConns:          cfg.PerTargetConcurrency,
-		MaxIdleConnsPerHost:   cfg.PerTargetConcurrency,
-		IdleConnTimeout:       30 * time.Second,
 		ExpectContinueTimeout: time.Second,
 	}
 	t := &target{
