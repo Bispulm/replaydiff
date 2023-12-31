@@ -82,14 +82,18 @@ their earliest segment creation time.
 | Limit | Value |
 |---|---|
 | Stored or uncompressed frame, hard limit | 64 MiB |
+| Footer, stored or uncompressed | 4 KiB |
 | Encoded record when writing, default | 16 MiB |
 | Index size when reading, default | 1,000,000 records |
 | Path, query | 64 KiB each |
 | Headers per message | 512 |
 
 A frame's declared uncompressed size is checked against the limit before
-allocating, and the output must match it exactly. A dataset over the index limit
-is an error rather than a silently replayed prefix.
+allocating, and the output must match it exactly. Checksums are not treated as
+proof that a size is honest, since anyone crafting a file can compute them.
+Forward scanning after damage makes one pass with one buffer per segment, however
+many false markers a file holds. A dataset over the index limit is an error rather
+than a silently replayed prefix.
 
 ## Recovery
 
