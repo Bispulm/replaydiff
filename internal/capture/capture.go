@@ -353,7 +353,10 @@ func (c *Capture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reqHeader: r.Header.Clone(),
 	}
 	forwarded := r.WithContext(context.WithValue(r.Context(), exchangeKey{}, ex))
-	if r.Body != nil && r.Body != http.NoBody {
+	// A zero length means no body, however the server represents it. Over HTTP/2
+	// the Body is non-nil, and the proxy correctly never reads it, so a tap would
+	// wait for an EOF that never comes.
+	if r.Body != nil && r.Body != http.NoBody && r.ContentLength != 0 {
 		ex.reqTap = newBodyTap(c.limits.MaxRequestBodyBytes, &c.budget)
 		forwarded.Body = &teeBody{ReadCloser: r.Body, tap: ex.reqTap}
 	}

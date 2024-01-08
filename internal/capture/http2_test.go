@@ -226,6 +226,45 @@ func TestEveryProtocolCombinationForwardsAndRecords(t *testing.T) {
 	}
 }
 
+// Over HTTP/2 a request with no body still has a non-nil Body that nothing reads,
+// so it must not be mistaken for a body that was cut short.
+func TestBodylessRequestsStayReplayableOnEveryProtocol(t *testing.T) {
+	for _, front := range []wire{wireHTTP1, wireH2C, wireTLSH2} {
+		t.Run(string(front), func(t *testing.T) {
+			p := newH2Path(t, front, wireHTTP1, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{}`)
+			}))
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			for _, method := range []string{http.MethodGet, http.MethodDelete} {
+				resp, err := p.do(ctx, method, "/", nil, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_ = resp.Body.Close()
+			}
+			// A body of unknown length that turns out to be empty.
+			resp, err := p.do(ctx, http.MethodPost, "/", io.NopCloser(strings.NewReader("")), map[string]string{"Content-Type": "application/json"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+
+			records := p.records()
+			if len(records) != 3 {
+				t.Fatalf("records = %d", len(records))
+			}
+			for _, rec := range records {
+				if rec.Request.Body.State != traffic.BodyEmpty || !rec.Replay.Eligible {
+					t.Errorf("%s: body = %+v, replay = %+v", rec.Request.Method, rec.Request.Body, rec.Replay)
+				}
+			}
+		})
+	}
+}
+
 func TestHTTP2TrailersAreForwardedAndRedacted(t *testing.T) {
 	secret := sentinel(t)
 	p := newH2Path(t, wireH2C, wireH2C, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
