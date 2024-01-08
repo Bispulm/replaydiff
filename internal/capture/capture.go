@@ -9,6 +9,7 @@ package capture
 import (
 	"cmp"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -120,8 +121,12 @@ type Config struct {
 	Engine *redact.Engine
 	// Limits bounds resource use.
 	Limits Limits
-	// Transport overrides the upstream transport.
-	Transport http.RoundTripper
+	// UpstreamH2C sends to the upstream using HTTP/2 without TLS, with no fallback
+	// to HTTP/1.1. It is for development, and requires an http:// upstream.
+	UpstreamH2C bool
+	// UpstreamTLS configures an https:// upstream, such as a private CA. HTTP/2
+	// is negotiated through ALPN when the upstream offers it.
+	UpstreamTLS *tls.Config
 	// FS overrides segment storage.
 	FS traffic.FS
 	// Logger receives operational logs, which never hold traffic content.
@@ -187,6 +192,8 @@ func New(cfg Config) (*Capture, error) {
 		return nil, errors.New("capture: output directory is required")
 	case cfg.Engine == nil:
 		return nil, errors.New("capture: redaction engine is required")
+	case cfg.UpstreamH2C && cfg.Upstream.Scheme != "http":
+		return nil, errors.New("capture: h2c needs an http:// upstream; https negotiates HTTP/2 by itself")
 	}
 	if err := cfg.Limits.validate(); err != nil {
 		return nil, err
@@ -226,7 +233,7 @@ func New(cfg Config) (*Capture, error) {
 		c.drops[reason] = new(atomic.Int64)
 		c.warned[reason] = new(atomic.Bool)
 	}
-	c.proxy = c.newReverseProxy(cfg.Transport)
+	c.proxy = c.newReverseProxy(newUpstreamTransport(cfg))
 
 	c.workers.Add(limits.Workers)
 	for range limits.Workers {
@@ -251,18 +258,28 @@ func New(cfg Config) (*Capture, error) {
 	return c, nil
 }
 
-func (c *Capture) newReverseProxy(transport http.RoundTripper) *httputil.ReverseProxy {
-	if transport == nil {
-		t := http.DefaultTransport.(*http.Transport).Clone()
-		// The upstream is explicit config. An ambient proxy variable mustn't
-		// redirect live traffic.
-		t.Proxy = nil
-		// The client's own Accept-Encoding is forwarded, and compressed bytes
-		// pass through untouched.
-		t.DisableCompression = true
-		t.MaxIdleConnsPerHost = 256
-		transport = t
+func newUpstreamTransport(cfg Config) *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	// The upstream is explicit config. An ambient proxy variable mustn't redirect
+	// live traffic.
+	t.Proxy = nil
+	// The client's own Accept-Encoding is forwarded, and compressed bytes pass
+	// through untouched.
+	t.DisableCompression = true
+	t.MaxIdleConnsPerHost = 256
+	t.TLSClientConfig = cfg.UpstreamTLS.Clone()
+	t.Protocols = new(http.Protocols)
+	if cfg.UpstreamH2C {
+		// Only this: with HTTP/1 also enabled, the transport would use HTTP/1.
+		t.Protocols.SetUnencryptedHTTP2(true)
+	} else {
+		t.Protocols.SetHTTP1(true)
+		t.Protocols.SetHTTP2(true)
 	}
+	return t
+}
+
+func (c *Capture) newReverseProxy(transport http.RoundTripper) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(c.upstream)
