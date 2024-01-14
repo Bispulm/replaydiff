@@ -95,6 +95,9 @@ func (s *Service) routes() {
 	s.mux.HandleFunc("POST /v1/login", s.login)
 	s.mux.HandleFunc("GET /v1/me", s.getMe)
 	s.mux.HandleFunc("GET /v1/cart/{sid}/step/{n}", s.cartStep)
+	s.mux.HandleFunc("GET /v1/protocol", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"proto": r.Proto})
+	})
 }
 
 func (s *Service) isCandidate() bool { return s.opts.Variant == Candidate }

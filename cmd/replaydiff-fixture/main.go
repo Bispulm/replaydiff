@@ -30,6 +30,9 @@ func run() error {
 	variant := flag.String("variant", string(fixture.Baseline), "baseline or candidate")
 	instance := flag.String("instance", "a", "replica name, used in noise fields")
 	latency := flag.Duration("candidate-latency", 40*time.Millisecond, "extra latency on the candidate's daily report route")
+	h2c := flag.Bool("h2c", false, "accept only HTTP/2 without TLS")
+	certFile := flag.String("tls-cert", "", "serve TLS with this certificate, negotiating HTTP/2")
+	keyFile := flag.String("tls-key", "", "private key for --tls-cert")
 	flag.Parse()
 
 	svc, err := fixture.New(fixture.Options{
@@ -49,10 +52,26 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	srv := &http.Server{Handler: svc, ReadHeaderTimeout: 5 * time.Second}
+	protocols := new(http.Protocols)
+	switch {
+	case *h2c:
+		protocols.SetUnencryptedHTTP2(true)
+	case *certFile != "":
+		protocols.SetHTTP1(true)
+		protocols.SetHTTP2(true)
+	default:
+		protocols.SetHTTP1(true)
+	}
+	srv := &http.Server{Handler: svc, Protocols: protocols, ReadHeaderTimeout: 5 * time.Second}
 
 	errc := make(chan error, 1)
-	go func() { errc <- srv.Serve(ln) }()
+	go func() {
+		if *certFile != "" {
+			errc <- srv.ServeTLS(ln, *certFile, *keyFile)
+			return
+		}
+		errc <- srv.Serve(ln)
+	}()
 	slog.Info("fixture listening", "addr", ln.Addr().String(), "variant", *variant, "instance", *instance)
 
 	select {
