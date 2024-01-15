@@ -40,6 +40,7 @@ func TestRunRejectsInvalidInvocations(t *testing.T) {
 		"unset credential":   {base(append(allowAll, "--target-credential", "candidate:A=REPLAYDIFF_TEST_UNSET")...), "REPLAYDIFF_TEST_UNSET"},
 		"trace allowed":      {base(append(allowAll, "--allow-method", "TRACE")...), "TRACE"},
 		"empty dataset":      {base(allowAll...), "no traffic segments"},
+		"missing ca file":    {base(append(allowAll, "--target-ca-file", report+".absent")...), "--target-ca-file"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			code, _, stderr := runCLI(tc.args...)

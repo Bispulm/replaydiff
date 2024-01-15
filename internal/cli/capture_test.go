@@ -55,6 +55,12 @@ func TestCaptureRejectsInvalidInvocations(t *testing.T) {
 		"bad size":         {append([]string{"--max-request-body", "lots"}, valid...), "max-request-body"},
 		"bad log level":    {append([]string{"--log-level", "loud"}, valid...), "log-level"},
 		"negative queue":   {append([]string{"--queue", "-1"}, valid...), "negative"},
+		"cert without key": {append([]string{"--tls-cert", policy}, valid...), "--tls-key"},
+		"key without cert": {append([]string{"--tls-key", policy}, valid...), "--tls-cert"},
+		"h2c and tls":      {append([]string{"--h2c", "--tls-cert", policy, "--tls-key", policy}, valid...), "--h2c"},
+		"missing ca file":  {append([]string{"--upstream-ca-file", policy + ".absent"}, valid...), "--upstream-ca-file"},
+		"ca file not pem":  {append([]string{"--upstream-ca-file", policy}, valid...), "--upstream-ca-file"},
+		"h2c upstream tls": {[]string{"--upstream", "https://127.0.0.1:1", "--upstream-h2c", "--out", dir, "--redact", policy}, "h2c"},
 		"negative workers": {append([]string{"--workers", "-1"}, valid...), "negative"},
 		"unset secret env": {append([]string{"--session-secret-env", "REPLAYDIFF_TEST_UNSET_VARIABLE"}, valid...), "REPLAYDIFF_TEST_UNSET_VARIABLE"},
 	} {
