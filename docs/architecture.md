@@ -61,6 +61,7 @@ when the write returns.
 - [Traffic format](traffic-format.md)
 - [Redaction](redaction.md)
 - [Replay](replay.md)
+- [Protocols](protocols.md)
 - [Fixtures](fixtures.md)
 - [Related tools](related-tools.md)
 - [Decision records](adr/)
