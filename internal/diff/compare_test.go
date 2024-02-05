@@ -793,3 +793,63 @@ func TestExactNumberComparisonIsBounded(t *testing.T) {
 		}
 	}
 }
+
+// observeRates feeds n comparisons where the baselines disagree on the first
+// disagreements of them, and the candidate differs from both on the first differences.
+func observeRates(comparator *Comparator, n, disagreements, differences int) {
+	for i := range n {
+		a, b := `{"v":"same"}`, `{"v":"same"}`
+		if i < disagreements {
+			b = `{"v":"other"}`
+		}
+		c := a
+		if i < differences {
+			c = `{"v":"changed"}`
+		}
+		comparator.Observe(record(i+1, "GET", "/x", jsonReply(a), jsonReply(b), jsonReply(c)))
+	}
+}
+
+// A gap between rates means little on few observations. Two timestamps colliding by
+// chance mustn't produce a warning, and it mustn't produce false confidence either.
+func TestNoiseDecisionAccountsForSampleSize(t *testing.T) {
+	for name, tc := range map[string]struct {
+		n, disagreements, differences int
+		want                          string
+		finding                       string
+	}{
+		"small gap is noise":             {5, 4, 5, NoiseExplained, "info:noise_explained:$.v"},
+		"equal rates are noise":          {3, 3, 3, NoiseExplained, "info:noise_explained:$.v"},
+		"large gap on few is uncertain":  {5, 3, 5, NoiseInsufficient, "uncertain:insufficient_baseline_evidence:$.v"},
+		"very rare noise on few":         {3, 1, 3, NoiseInsufficient, "uncertain:insufficient_baseline_evidence:$.v"},
+		"clear gap on some is exceeded":  {10, 1, 10, NoiseExceeded, "warning:value_changed_beyond_noise:$.v"},
+		"same gap on many is exceeded":   {200, 120, 200, NoiseExceeded, "warning:value_changed_beyond_noise:$.v"},
+		"small gap on many is noise":     {1000, 900, 1000, NoiseExplained, "info:noise_explained:$.v"},
+		"candidate rate below baselines": {50, 40, 5, NoiseExplained, "info:noise_explained:$.v"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			comparator := newComparator(t, "", "")
+			observeRates(comparator, tc.n, tc.disagreements, tc.differences)
+			result := comparator.Result()
+			wantKinds(t, result, tc.finding)
+			if result.Noise[0].Decision != tc.want {
+				t.Fatalf("decision = %+v", result.Noise[0])
+			}
+		})
+	}
+}
+
+func TestWilsonIntervalIsBoundedAndContainsTheRate(t *testing.T) {
+	for _, tc := range []struct{ successes, n int }{{0, 1}, {1, 1}, {0, 100}, {100, 100}, {1, 10}, {3, 5}, {500, 1000}} {
+		low, high := wilsonInterval(tc.successes, tc.n)
+		rate := float64(tc.successes) / float64(tc.n)
+		if low < 0 || high > 1 || low > rate || high < rate {
+			t.Errorf("wilsonInterval(%d, %d) = %v, %v for rate %v", tc.successes, tc.n, low, high, rate)
+		}
+	}
+	narrowLow, narrowHigh := wilsonInterval(500, 1000)
+	wideLow, wideHigh := wilsonInterval(5, 10)
+	if narrowHigh-narrowLow >= wideHigh-wideLow {
+		t.Fatal("more observations must narrow the interval")
+	}
+}
