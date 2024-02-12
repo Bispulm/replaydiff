@@ -173,7 +173,7 @@ func runHTTP2Path(t *testing.T, serviceFlags, proxyFlags, runFlags []string, sch
 
 	report := filepath.Join(work, "report.json")
 	runArgs := append([]string{
-		"run", "--traffic", trafficDir, "--report", report, "--rps", "0",
+		"run", "--traffic", trafficDir, "--report", report, "--redact", policy, "--rps", "0",
 		"--baseline-a", a, "--baseline-b", b, "--candidate", c,
 		"--allow-origin", a, "--allow-origin", b, "--allow-origin", c,
 	}, runFlags...)
@@ -236,7 +236,7 @@ func TestUntrustedTargetCertificateCannotPass(t *testing.T) {
 		return strings.Replace(p.baseURL(t), "http://", "https://", 1)
 	}
 	a, b, c := secure("a"), secure("b"), secure("c")
-	got := runCommand(t, nil, "replaydiff", "run", "--traffic", trafficDir, "--report", filepath.Join(work, "report.json"),
+	got := runCommand(t, nil, "replaydiff", "run", "--traffic", trafficDir, "--report", filepath.Join(work, "report.json"), "--redact", policy,
 		"--baseline-a", a, "--baseline-b", b, "--candidate", c, "--allow-origin", a, "--allow-origin", b, "--allow-origin", c)
 	if got.code != 2 {
 		t.Fatalf("exit %d: %s", got.code, got.stderr)
