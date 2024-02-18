@@ -853,3 +853,63 @@ func TestWilsonIntervalIsBoundedAndContainsTheRate(t *testing.T) {
 		t.Fatal("more observations must narrow the interval")
 	}
 }
+
+// Noise applies to a field on a route and of a type. Disagreement about strings says
+// nothing about whether a change to the same field's numbers is real.
+func TestNoiseIsTrackedSeparatelyByType(t *testing.T) {
+	comparator := newComparator(t, "", "")
+	seq := 0
+	observe := func(a, b, c string) {
+		seq++
+		comparator.Observe(record(seq, "GET", "/x", jsonReply(a), jsonReply(b), jsonReply(c)))
+	}
+	for i := range 10 {
+		if i < 4 {
+			observe(`{"v":"same"}`, `{"v":"other"}`, `{"v":"same"}`)
+		} else {
+			observe(`{"v":"same"}`, `{"v":"same"}`, `{"v":"same"}`)
+		}
+	}
+	for i := range 10 {
+		if i < 6 {
+			observe(`{"v":1}`, `{"v":1}`, `{"v":2}`)
+		} else {
+			observe(`{"v":1}`, `{"v":1}`, `{"v":1}`)
+		}
+	}
+	result := comparator.Result()
+	wantKinds(t, result, "info:noise_explained:$.v", "warning:value_changed:$.v")
+	for _, finding := range result.Findings {
+		want := "string"
+		if finding.Kind == KindValueChanged {
+			want = "number"
+		}
+		if finding.ValueType != want {
+			t.Errorf("%s has value type %q, want %q", finding.Kind, finding.ValueType, want)
+		}
+	}
+	if len(result.Noise) != 1 || result.Noise[0].Type != "string" {
+		t.Fatalf("noise = %+v", result.Noise)
+	}
+}
+
+// A type listed as opaque is compared whole, even if its name ends in "json". Parsing it
+// as JSON would read only the first value of newline-delimited data.
+func TestOpaqueTypesNamedLikeJSONAreComparedWhole(t *testing.T) {
+	const media = "application/x-ndjson"
+	reply := func(body string) reply { return reply{status: 200, contentType: media, body: body} }
+	comparator := newComparator(t, "", `opaque_content_types: [application/x-ndjson]`)
+	comparator.Observe(record(1, "GET", "/x", reply("{\"a\":1}\n{\"a\":2}\n"), reply("{\"a\":1}\n{\"a\":2}\n"), reply("{\"a\":1}\n{\"a\":3}\n")))
+	wantKinds(t, comparator.Result(), "warning:value_changed:$")
+}
+
+func TestHeadersThatAreNeverStoredCannotBeCompared(t *testing.T) {
+	for _, name := range []string{"ETag", "etag", "Content-Length", "Content-Encoding", "Digest", "Connection", "Transfer-Encoding", "Trailer"} {
+		if _, err := ParseConfig([]byte(`compare_headers: ["` + name + `"]`)); err == nil {
+			t.Errorf("compare_headers %s must be refused: it would never be compared, and nothing would say so", name)
+		}
+	}
+	if _, err := ParseConfig([]byte(`compare_headers: [Cache-Control, Vary]`)); err != nil {
+		t.Fatal(err)
+	}
+}

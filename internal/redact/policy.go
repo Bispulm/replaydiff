@@ -130,3 +130,7 @@ const formMediaType = "application/x-www-form-urlencoded"
 func isJSONType(mediaType string) bool {
 	return mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
 }
+
+// IsJSONType reports whether bodies of a media type are parsed as JSON. A body sanitized
+// as JSON is known to hold exactly one valid value.
+func IsJSONType(mediaType string) bool { return isJSONType(mediaType) }
