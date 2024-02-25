@@ -282,3 +282,17 @@ func TestRunRefusesToCompareWithoutARedactionPolicy(t *testing.T) {
 		t.Fatalf("exit %d: %s", got.code, got.stderr)
 	}
 }
+
+// A limit means part of the evidence wasn't compared, so the run can't claim to be complete.
+func TestReachedComparisonLimitCannotExitZero(t *testing.T) {
+	s := deployForDiff(t)
+	captureFixtureTraffic(t, s)
+	config := writeFile(t, filepath.Join(s.work, "diff.yaml"), `limits: {max_routes: 1}`)
+	_, _, run := runComparison(t, s, "--diff-config", config)
+	if run.code != 2 {
+		t.Fatalf("run exit %d: %s", run.code, run.stderr)
+	}
+	if !strings.Contains(string(run.stderr), "route_limit_reached") {
+		t.Fatalf("stderr = %s", run.stderr)
+	}
+}
