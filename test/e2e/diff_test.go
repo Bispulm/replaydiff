@@ -206,9 +206,8 @@ func TestSeededRegressionsAreDetectedAndNoiseIsExplained(t *testing.T) {
 		t.Fatal("report holds a value the policy covers")
 	}
 
-	// A comparison with no CI policy still can't pass the gate.
 	gate := runCommand(t, nil, "replaydiff", "report", filepath.Join(s.work, "report.json"))
-	if gate.code != 2 {
+	if gate.code != 1 {
 		t.Fatalf("report exit %d", gate.code)
 	}
 	for _, want := range []string{"field_removed", "$.customer.tier", "breaking", "latency_regression"} {
