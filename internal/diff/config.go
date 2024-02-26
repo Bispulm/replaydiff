@@ -226,8 +226,9 @@ func validateFieldPaths(paths []string) error {
 	return nil
 }
 
-// pathMatchesRule reports whether a normalized field path is the rule's path or
-// inside it.
+// PathCovers reports whether a normalized field path is the rule's path or inside it.
+func PathCovers(rule, path string) bool { return pathMatchesRule(rule, path) }
+
 func pathMatchesRule(rule, path string) bool {
 	if !strings.HasPrefix(path, rule) {
 		return false
