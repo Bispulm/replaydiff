@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 
@@ -84,6 +83,7 @@ func Load(path string) (*Run, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read report: %w", err)
 	}
+	// Unmarshal also rejects anything after the first value.
 	var probe struct {
 		Schema string `json:"schema"`
 	}
@@ -98,9 +98,6 @@ func Load(path string) (*Run, error) {
 	var run Run
 	if err := dec.Decode(&run); err != nil {
 		return nil, fmt.Errorf("read report: %w", err)
-	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return nil, errors.New("read report: unexpected data after the report")
 	}
 	return &run, nil
 }
