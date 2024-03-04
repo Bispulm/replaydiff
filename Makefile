@@ -20,6 +20,9 @@ secrets:
 
 check: lint race vuln secrets
 
-.PHONY: demo
+.PHONY: demo gate-demo
 demo:
 	./scripts/demo.sh
+
+gate-demo:
+	./scripts/gate-demo.sh

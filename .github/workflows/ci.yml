@@ -19,6 +19,27 @@ jobs:
       - run: go build ./...
       - run: go test -race -count=1 ./...
 
+  # Proves each gate outcome against real processes. The script fails unless a regression
+  # exits 1, the same code exits 0 and a dead baseline exits 2, so this job stays green when
+  # the gate correctly rejects a regression.
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: ./scripts/gate-demo.sh
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: gate-reports
+          path: |
+            .demo/gate/*/summary.md
+            .demo/gate/*/junit.xml
+          if-no-files-found: warn
+          retention-days: 7
+
   lint:
     runs-on: ubuntu-latest
     steps:

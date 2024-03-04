@@ -1,0 +1,22 @@
+# CI policy for `replaydiff report --policy`. See docs/ci.md.
+# Every value here is optional. Without a file, breaking findings fail the build, and
+# uncertainty or dropped recordings stop it from passing.
+
+# Severities (breaking, warning, uncertain, info) and kinds that count as regressions.
+fail_on: [breaking, latency_regression]
+
+evidence:
+  # Records that must have been compared.
+  min_compared: 20
+  # Recordings capture may drop before the run can't pass, as a percentage.
+  max_capture_drop_percent: 1
+  # Uncertain findings that don't count against the evidence. Routes serving HTML can't be
+  # compared by structure, for example.
+  allow_uncertain: [body_not_compared]
+
+# Known and accepted changes. Each needs a reason, and stays visible in every report.
+waivers:
+  - route: "GET /v1/users/*"
+    kinds: [value_changed]
+    paths: ["$.display_name"]
+    reason: "Display names are upper-cased on purpose in this release."
