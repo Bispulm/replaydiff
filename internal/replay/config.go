@@ -11,6 +11,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -86,13 +87,17 @@ func (c Config) validateLimits() error {
 	switch {
 	case c.Concurrency < 0, c.PerTargetConcurrency < 0, c.MaxActiveSessions < 0:
 		return errors.New("replay: concurrency limits must not be negative")
-	case c.RecordsPerSecond < 0, c.TargetCallsPerSecond < 0:
-		return errors.New("replay: rate limits must not be negative")
+	case !validRate(c.RecordsPerSecond), !validRate(c.TargetCallsPerSecond):
+		return errors.New("replay: rate limits must be finite and not negative")
 	case c.Timeout < 0, c.MaxResponseBytes < 0:
 		return errors.New("replay: timeout and response limit must not be negative")
 	}
 	return nil
 }
+
+// validRate is written so that NaN fails it. A rate of NaN or infinity would otherwise
+// quietly remove the limit.
+func validRate(v float64) bool { return v >= 0 && !math.IsInf(v, 1) }
 
 // TargetNotAllowedError means a target's origin isn't on the allowlist.
 type TargetNotAllowedError struct {
