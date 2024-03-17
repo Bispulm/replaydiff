@@ -26,19 +26,26 @@ it's what someone needs to act on. The output shows both.
 
 ### What stops a run from passing
 
-Evidence is judged from the run's raw figures and not from its own claim, so editing
-`evidence_complete` in a report changes nothing. Any of these give exit 2 unless a regression
-was also found:
+Evidence is judged from the run's raw figures and not from its own claim, and figures that
+disagree with each other can't pass. Any of these give exit 2 unless a regression was also found:
 
 - The report is missing, unreadable, or from another version.
 - The dataset is damaged or incomplete in any way.
 - There were no eligible records, or fewer compared than `min_compared`.
 - The run was interrupted, or a record couldn't be read back.
 - Any call to a baseline failed.
-- More uncertain findings than `max_uncertain`, including reached limits.
+- More uncertain findings than `max_uncertain`.
+- A comparison limit was reached, so part of the evidence wasn't compared. No policy can allow this,
+  because the fix is to raise the limit.
+- The report's figures disagree with each other, or it holds a kind of finding this build doesn't know.
 - Capture dropped more than `max_capture_drop_percent` of what it saw.
 - Findings were left out of the report by a limit, so they couldn't be judged.
 - An output file couldn't be written.
+
+**A report isn't tamper-proof.** These checks catch a damaged, stale or inconsistent file. They don't stop
+someone deliberately forging one, because it isn't signed: anyone able to edit it could remove its findings
+and correct its totals. Run `run` and `report` in the same CI job, so that nothing can change the file between
+them, and treat a report from anywhere else as a claim rather than as evidence.
 
 ## Policy
 
@@ -63,14 +70,15 @@ waivers:
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `fail_on` | `[breaking]` | Severities and [kinds](diffing.md#severity) that are regressions |
+| `fail_on` | `[breaking]` | Severities and [kinds](diffing.md#severity) that are regressions. Must include `breaking`. |
 | `evidence.min_compared` | 1 | Records that must have been compared |
 | `evidence.max_uncertain` | 0 | Uncertain findings a pass may have |
-| `evidence.allow_uncertain` | None | Uncertain kinds not counted against that limit |
+| `evidence.allow_uncertain` | None | Uncertain kinds not counted against that limit. Reached limits can't be listed. |
 | `evidence.max_capture_drop_percent` | 0 | Dropped recordings, out of all exchanges capture saw |
 | `evidence.max_skipped_percent` | 100 | Skipped records, out of all readable ones |
 
-`--fail-on breaking,warning` overrides `fail_on` for one invocation.
+`--fail-on breaking,warning` overrides `fail_on` for one invocation. A list without `breaking` is refused,
+so that adding to the default can't replace it by accident. Use a waiver to accept a known breaking change.
 
 **Small runs will exit 2 at first.** With few requests per route, fields that vary can't be told
 from real changes, and the output says `insufficient_baseline_evidence`. Replay more traffic per
@@ -81,7 +89,8 @@ route, or allow it knowingly with `allow_uncertain`.
 A waiver accepts a known change on a route, for the listed kinds and optionally the listed paths.
 
 - A `reason` is required, and it appears in every report next to the finding.
-- A waiver can't excuse missing evidence, because it's about a known change and not an unknown one.
+- A waiver can't excuse missing evidence, because it's about a known change and not an unknown one. That
+  includes every uncertain kind. `allow_uncertain` is the separate, deliberate way to accept those.
 - A waiver that matched nothing is listed as unused, since it may be stale.
 
 Waivers apply only to findings in the report's list. Past `max_findings`, the rest can't be waived.

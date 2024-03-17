@@ -99,5 +99,12 @@ func Load(path string) (*Run, error) {
 	if err := dec.Decode(&run); err != nil {
 		return nil, fmt.Errorf("read report: %w", err)
 	}
+	if run.Summary != nil {
+		for role, target := range run.Summary.Targets {
+			if target == nil {
+				return nil, fmt.Errorf("read report: target %q has no figures", role)
+			}
+		}
+	}
 	return &run, nil
 }

@@ -90,7 +90,6 @@ func TestVerdicts(t *testing.T) {
 		"warning can fail":              {withFindings(warning()), "fail_on: [breaking, warning]", VerdictRegression, 1},
 		"one kind can fail":             {withFindings(latency()), "fail_on: [breaking, latency_regression]", VerdictRegression, 1},
 		"other kinds stay passing":      {withFindings(warning()), "fail_on: [breaking, latency_regression]", VerdictPass, 0},
-		"breaking can be turned off":    {withFindings(warning()), "fail_on: [latency_regression]", VerdictPass, 0},
 		"uncertain isn't a pass":        {withFindings(uncertain()), "", VerdictIncomplete, 2},
 		"uncertain can be allowed":      {withFindings(uncertain()), "evidence: {max_uncertain: 1}", VerdictPass, 0},
 		"allowance has a limit":         {withFindings(uncertain(), uncertain()), "evidence: {max_uncertain: 1}", VerdictIncomplete, 2},
@@ -122,7 +121,7 @@ func TestEvidenceProblemsCannotPass(t *testing.T) {
 		},
 		"comparison missing":        func(r *Run) { r.Comparison = nil },
 		"nothing compared":          func(r *Run) { r.Comparison.Coverage.Compared = 0 },
-		"comparison missed records": func(r *Run) { r.Comparison.Coverage.Records = 9 },
+		"comparison missed records": func(r *Run) { r.Comparison.Coverage = diff.Coverage{Records: 9, Compared: 9} },
 		"summary missing":           func(r *Run) { r.Summary = nil },
 		"stored problem":            func(r *Run) { r.Problems = []string{"recorded at run time"} },
 		"stored incomplete":         func(r *Run) { r.EvidenceComplete = false },
@@ -154,7 +153,12 @@ func TestEvidenceCompleteClaimIsNotTrusted(t *testing.T) {
 func TestCaptureDropsFollowPolicy(t *testing.T) {
 	run := func(drops int64) *Run {
 		r := completeRun()
-		r.Summary.Records = 99
+		r.Summary.Records, r.Summary.Eligible, r.Summary.Replayed = 99, 99, 99
+		r.Comparison.Coverage = diff.Coverage{Records: 99, Compared: 99}
+		for _, target := range r.Summary.Targets {
+			target.Calls = 99
+			target.Outcomes = map[string]int64{"ok": 99}
+		}
 		r.Summary.CaptureDrops = map[string]int64{"queue_full": drops}
 		return r
 	}
@@ -177,6 +181,10 @@ func TestSkippedRecordsFollowPolicy(t *testing.T) {
 		r.Summary.Replayed = 5
 		r.Summary.Skipped = map[string]int{"mutating_method": 5}
 		r.Comparison.Coverage = diff.Coverage{Records: 5, Compared: 5}
+		for _, target := range r.Summary.Targets {
+			target.Calls = 5
+			target.Outcomes = map[string]int64{"ok": 5}
+		}
 		return r
 	}
 	if d := Evaluate(run(), mustPolicy(t, "")); d.Verdict != VerdictPass {
@@ -196,6 +204,17 @@ func TestMinComparedFollowsPolicy(t *testing.T) {
 	}
 	if d := Evaluate(completeRun(), mustPolicy(t, "evidence: {min_compared: 11}")); d.Verdict != VerdictIncomplete {
 		t.Fatalf("verdict = %s", d.Verdict)
+	}
+}
+
+func TestAFindingWithinTheUncertainAllowanceIsNotCountedAgainstEvidence(t *testing.T) {
+	decision := Evaluate(withFindings(uncertain()), mustPolicy(t, "evidence: {max_uncertain: 1}"))
+	if decision.Inconclusive != 0 || decision.Findings[0].Disposition != DispositionAllowed {
+		t.Fatalf("decision = %+v", decision)
+	}
+	decision = Evaluate(withFindings(uncertain(), uncertain()), mustPolicy(t, "evidence: {max_uncertain: 1}"))
+	if decision.Inconclusive != 1 || decision.Findings[1].Disposition != DispositionInconclusive {
+		t.Fatalf("decision = %+v", decision)
 	}
 }
 
@@ -275,9 +294,113 @@ func TestLimitNoticesCountAsUncertain(t *testing.T) {
 	if d := Evaluate(run, mustPolicy(t, "")); d.Verdict != VerdictIncomplete {
 		t.Fatalf("verdict = %s", d.Verdict)
 	}
-	// A notice is judged like any other finding, so a policy can accept it knowingly.
-	if d := Evaluate(run, mustPolicy(t, "evidence: {allow_uncertain: [field_limit_reached]}")); d.Verdict != VerdictPass {
-		t.Fatalf("verdict = %s: %v", d.Verdict, d.Problems)
+	// Part of the evidence wasn't compared. The fix is to raise the limit, so no allowance
+	// can turn this into a pass.
+	if d := Evaluate(run, mustPolicy(t, "evidence: {max_uncertain: 100}")); d.Verdict != VerdictIncomplete {
+		t.Fatalf("verdict = %s", d.Verdict)
+	}
+	for _, doc := range []string{
+		`evidence: {allow_uncertain: [field_limit_reached]}`,
+		`evidence: {allow_uncertain: [route_limit_reached]}`,
+		`waivers: [{route: "GET /a", kinds: [field_limit_reached], reason: "x"}]`,
+		`waivers: [{route: "(other routes)", kinds: [route_limit_reached], reason: "x"}]`,
+	} {
+		if _, err := ParsePolicy([]byte(doc)); err == nil {
+			t.Errorf("policy must be refused: %s", doc)
+		}
+	}
+}
+
+// A waiver accepts a known change. Uncertainty isn't one, and allow_uncertain is the
+// separate, deliberate way to accept it.
+func TestWaiversCannotCoverUncertainFindings(t *testing.T) {
+	for _, kind := range []string{"insufficient_baseline_evidence", "body_not_compared", "baseline_status_unstable"} {
+		if _, err := ParsePolicy([]byte(`waivers: [{route: "GET /a", kinds: [` + kind + `], reason: "x"}]`)); err == nil {
+			t.Errorf("a waiver for %s must be refused", kind)
+		}
+	}
+}
+
+// A finding's severity comes from its kind. A file can't downgrade a breaking change.
+func TestSeverityInAReportIsNotBelieved(t *testing.T) {
+	downgraded := withFindings(finding(diff.SeverityInfo, diff.KindFieldRemoved, "GET /a", "$.x"))
+	if decision := Evaluate(downgraded, mustPolicy(t, "")); decision.Verdict != VerdictRegression {
+		t.Fatalf("verdict = %s", decision.Verdict)
+	}
+	unknown := withFindings(finding(diff.SeverityInfo, diff.Kind("something_new"), "GET /a", "$.x"))
+	if decision := Evaluate(unknown, mustPolicy(t, "")); decision.Verdict != VerdictIncomplete {
+		t.Fatalf("an unknown kind can't be judged, verdict = %s", decision.Verdict)
+	}
+}
+
+func TestDisagreeingFiguresCannotPass(t *testing.T) {
+	for name, damage := range map[string]func(*Run){
+		"no targets":        func(r *Run) { r.Summary.Targets = map[string]*replay.TargetSummary{} },
+		"baseline missing":  func(r *Run) { delete(r.Summary.Targets, "baseline-b") },
+		"candidate missing": func(r *Run) { delete(r.Summary.Targets, "candidate") },
+		"negative outcome": func(r *Run) {
+			r.Summary.Targets["baseline-a"].Outcomes = map[string]int64{"ok": 11, "timeout": -1}
+		},
+		"more calls than outcomes":  func(r *Run) { r.Summary.Targets["candidate"].Calls = 11 },
+		"fewer calls than outcomes": func(r *Run) { r.Summary.Targets["candidate"].Calls = 9 },
+		"candidate never called": func(r *Run) {
+			r.Summary.Targets["candidate"].Calls, r.Summary.Targets["candidate"].Outcomes = 0, nil
+		},
+		"eligible without replay": func(r *Run) { r.Summary.Replayed = 0 },
+		"records disagree":        func(r *Run) { r.Summary.Records = 11 },
+		"negative records":        func(r *Run) { r.Summary.Records, r.Summary.Skipped = -1, map[string]int{"x": -11} },
+		"negative skip":           func(r *Run) { r.Summary.Skipped = map[string]int{"a": 2, "b": -2} },
+		"negative drop":           func(r *Run) { r.Summary.CaptureDrops = map[string]int64{"a": -5} },
+		"compared more than seen": func(r *Run) { r.Comparison.Coverage.Compared = 11 },
+		"negative compared":       func(r *Run) { r.Comparison.Coverage.Records = -1 },
+		"negative count":          func(r *Run) { r.Comparison.Counts[diff.SeverityBreaking] = -1 },
+		"negative truncated":      func(r *Run) { r.Comparison.Truncated.Findings = -1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			run := completeRun()
+			damage(run)
+			if d := Evaluate(run, mustPolicy(t, "")); d.Verdict != VerdictIncomplete {
+				t.Fatalf("verdict = %s", d.Verdict)
+			}
+		})
+	}
+}
+
+// Replacing the default rather than adding to it would let breaking changes pass by
+// accident, and waivers already exist for accepting one on purpose.
+func TestPolicyMustKeepFailingOnBreaking(t *testing.T) {
+	if _, err := ParsePolicy([]byte(`fail_on: [warning]`)); err == nil {
+		t.Error("fail_on without breaking must be refused")
+	}
+	policy := mustPolicy(t, "")
+	if err := policy.SetFailOn("warning"); err == nil {
+		t.Error("--fail-on without breaking must be refused")
+	}
+}
+
+// NaN compares false with everything, so a range check written with < and > lets it
+// through, and every later comparison then passes silently.
+func TestNonFiniteValuesAreRefused(t *testing.T) {
+	for _, doc := range []string{
+		`evidence: {max_capture_drop_percent: .nan}`,
+		`evidence: {max_skipped_percent: .nan}`,
+		`evidence: {max_capture_drop_percent: .inf}`,
+		`evidence: {max_skipped_percent: -.inf}`,
+	} {
+		if _, err := ParsePolicy([]byte(doc)); err == nil {
+			t.Errorf("policy must be refused: %s", doc)
+		}
+	}
+}
+
+func TestReportWithANullTargetIsRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.json")
+	data := `{"schema":"` + Schema + `","summary":{"targets":{"candidate":null}}}`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("want error")
 	}
 }
 
@@ -296,7 +419,7 @@ func TestTruncatedFindingsCannotPass(t *testing.T) {
 		run := withFindings(warning())
 		run.Comparison.Counts[diff.SeverityWarning] = 5
 		run.Comparison.Truncated.Findings = 4
-		if decision := Evaluate(run, mustPolicy(t, "fail_on: [latency_regression]")); decision.Verdict != VerdictIncomplete {
+		if decision := Evaluate(run, mustPolicy(t, "fail_on: [breaking, latency_regression]")); decision.Verdict != VerdictIncomplete {
 			t.Fatalf("verdict = %s", decision.Verdict)
 		}
 	})
@@ -349,7 +472,7 @@ func TestParsePolicyRejectsInvalidInput(t *testing.T) {
 		"waiver without route":  `waivers: [{kinds: [field_removed], reason: "x"}]`,
 		"waiver without kinds":  `waivers: [{route: "GET /a", reason: "x"}]`,
 		"waiver unknown kind":   `waivers: [{route: "GET /a", kinds: [nope], reason: "x"}]`,
-		"two documents":         "fail_on: [breaking]\n---\nfail_on: [warning]\n",
+		"two documents":         "fail_on: [breaking]\n---\nfail_on: [breaking]\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := ParsePolicy([]byte(doc)); err == nil {
@@ -368,11 +491,11 @@ func TestPolicyDefaultsAndLoading(t *testing.T) {
 		t.Fatalf("policy = %+v", policy)
 	}
 	path := filepath.Join(t.TempDir(), "policy.yaml")
-	if err := os.WriteFile(path, []byte(`fail_on: [warning]`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`fail_on: [breaking, warning]`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	policy, err = LoadPolicy(path)
-	if err != nil || !slices.Equal(policy.FailOn, []string{"warning"}) {
+	if err != nil || !slices.Equal(policy.FailOn, []string{"breaking", "warning"}) {
 		t.Fatalf("policy = %+v, err = %v", policy, err)
 	}
 	if _, err := LoadPolicy(path + ".absent"); err == nil {

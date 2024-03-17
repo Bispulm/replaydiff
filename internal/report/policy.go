@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -90,17 +91,21 @@ func (p *Policy) SetFailOn(list string) error {
 			entries = append(entries, trimmed)
 		}
 	}
-	if len(entries) == 0 {
-		return errors.New("--fail-on needs at least one severity or kind")
-	}
 	for _, entry := range entries {
 		if !validFailOn(entry) {
 			return fmt.Errorf("--fail-on: unknown severity or kind %q", entry)
 		}
 	}
+	if !slices.Contains(entries, string(diff.SeverityBreaking)) {
+		return errors.New(errMissingBreaking)
+	}
 	p.FailOn = entries
 	return nil
 }
+
+// errMissingBreaking stops a list that was meant to add to the default from replacing it,
+// which would quietly let breaking changes pass.
+const errMissingBreaking = "the list of what fails must include breaking; use a waiver to accept a known breaking change"
 
 func validFailOn(entry string) bool {
 	switch diff.Severity(entry) {
@@ -117,18 +122,26 @@ func (p *Policy) validate() error {
 			return fmt.Errorf("fail_on: unknown severity or kind %q", entry)
 		}
 	}
+	if !slices.Contains(p.FailOn, string(diff.SeverityBreaking)) {
+		return fmt.Errorf("fail_on: %s", errMissingBreaking)
+	}
 	e := p.Evidence
 	switch {
 	case e.MinCompared < 0, e.MaxUncertain < 0:
 		return errors.New("evidence: values must not be negative")
-	case e.MaxCaptureDropPercent < 0 || e.MaxCaptureDropPercent > 100:
+	// Written so that NaN fails. It compares false with everything, so a limit of NaN
+	// would never be exceeded.
+	case !(e.MaxCaptureDropPercent >= 0 && e.MaxCaptureDropPercent <= 100):
 		return errors.New("evidence.max_capture_drop_percent must be between 0 and 100")
-	case e.MaxSkippedPercent < 0 || e.MaxSkippedPercent > 100:
+	case !(e.MaxSkippedPercent >= 0 && e.MaxSkippedPercent <= 100):
 		return errors.New("evidence.max_skipped_percent must be between 0 and 100")
 	}
 	for _, kind := range e.AllowUncertain {
 		if severity, known := diff.SeverityOf(diff.Kind(kind)); !known || severity != diff.SeverityUncertain {
 			return fmt.Errorf("evidence.allow_uncertain: %q isn't an uncertain kind", kind)
+		}
+		if diff.IsLimitKind(diff.Kind(kind)) {
+			return fmt.Errorf("evidence.allow_uncertain: %q means part of the evidence wasn't compared; raise the limit instead", kind)
 		}
 	}
 	for _, waiver := range p.Waivers {
@@ -140,8 +153,13 @@ func (p *Policy) validate() error {
 			return fmt.Errorf("waivers: the waiver for %q needs a reason", waiver.Route)
 		}
 		for _, kind := range waiver.Kinds {
-			if _, known := diff.SeverityOf(diff.Kind(kind)); !known {
+			severity, known := diff.SeverityOf(diff.Kind(kind))
+			if !known {
 				return fmt.Errorf("waivers: unknown kind %q", kind)
+			}
+			// A waiver accepts a known change, and uncertainty isn't one.
+			if severity == diff.SeverityUncertain {
+				return fmt.Errorf("waivers: %q is uncertain, not a known change; use evidence.allow_uncertain if it should be allowed", kind)
 			}
 		}
 	}

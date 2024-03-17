@@ -5,6 +5,7 @@ import (
 	"slices"
 
 	"github.com/Bispulm/replaydiff/internal/diff"
+	"github.com/Bispulm/replaydiff/internal/replay"
 )
 
 // Verdict is the gate's conclusion.
@@ -68,8 +69,10 @@ type Decision struct {
 	Policy        *Policy  `json:"policy"`
 }
 
-// Evaluate applies a policy to a run. Evidence is judged from the raw figures instead of
-// the run's own claim, so an edited or stale file can't pass by saying it's complete.
+// Evaluate applies a policy to a run. Evidence is judged from the raw figures instead of the
+// run's own claim, and figures that disagree with each other can't pass, which catches a
+// damaged, stale or inconsistent file. A report isn't signed, so this isn't protection from
+// someone deliberately forging one. See docs/ci.md.
 func Evaluate(run *Run, policy *Policy) *Decision {
 	decision := &Decision{Policy: policy}
 	decision.Problems = evidenceProblems(run, policy)
@@ -102,8 +105,9 @@ func evidenceProblems(run *Run, policy *Policy) []string {
 		add("the report has no run summary")
 		return problems
 	}
-	// Both sources count. The recomputed one can't be talked out of a problem by an edited
-	// file, and the stored one holds anything only the run itself could see.
+	problems = append(problems, summaryInconsistencies(run.Summary)...)
+	// Both sources count. The recomputed one doesn't depend on what the file claims, and the
+	// stored one holds anything only the run itself could see.
 	problems = append(problems, run.Summary.Problems()...)
 	for _, problem := range run.Problems {
 		if !slices.Contains(problems, problem) {
@@ -140,6 +144,9 @@ func evidenceProblems(run *Run, policy *Policy) []string {
 		return problems
 	}
 	coverage := run.Comparison.Coverage
+	if coverage.Records < 0 || coverage.Compared < 0 || coverage.Compared > coverage.Records {
+		add("the comparison's coverage figures are inconsistent")
+	}
 	if coverage.Compared < policy.minCompared() {
 		add("%d record(s) compared, and at least %d are required", coverage.Compared, policy.minCompared())
 	}
@@ -149,12 +156,73 @@ func evidenceProblems(run *Run, policy *Policy) []string {
 	return problems
 }
 
+// summaryInconsistencies checks that a run's figures agree with each other. A real run's
+// always do, because every record is counted exactly once.
+func summaryInconsistencies(summary *replay.Summary) []string {
+	var problems []string
+	add := func(format string, args ...any) { problems = append(problems, fmt.Sprintf(format, args...)) }
+
+	skipped, negative := 0, false
+	for _, n := range summary.Skipped {
+		skipped += n
+		negative = negative || n < 0
+	}
+	for _, n := range summary.CaptureDrops {
+		negative = negative || n < 0
+	}
+	if negative || summary.Records < 0 || summary.Eligible < 0 || summary.Replayed < 0 || summary.NotReplayed < 0 || summary.LoadFailures < 0 {
+		add("the run summary has negative counts")
+	}
+	if summary.Records != summary.Eligible+skipped {
+		add("%d readable record(s) don't match %d eligible and %d skipped", summary.Records, summary.Eligible, skipped)
+	}
+	if accounted := summary.Replayed + summary.NotReplayed + summary.LoadFailures; accounted != summary.Eligible {
+		add("%d eligible record(s) don't match the %d accounted for", summary.Eligible, accounted)
+	}
+	for _, role := range []replay.Role{replay.RoleBaselineA, replay.RoleBaselineB, replay.RoleCandidate} {
+		name := role.String()
+		target := summary.Targets[name]
+		if target == nil {
+			add("the run summary has no figures for %s", name)
+			continue
+		}
+		var outcomes int64
+		negativeOutcome := false
+		for _, n := range target.Outcomes {
+			outcomes += n
+			negativeOutcome = negativeOutcome || n < 0
+		}
+		switch {
+		case negativeOutcome || target.Calls < 0:
+			add("%s has negative counts", name)
+		case outcomes != target.Calls:
+			add("%s made %d call(s), but %d outcome(s) are recorded", name, target.Calls, outcomes)
+		case target.Calls < int64(summary.Replayed):
+			add("%s made %d call(s) for %d replayed record(s)", name, target.Calls, summary.Replayed)
+		}
+	}
+	return problems
+}
+
 func judgeFindings(comparison *diff.Result, policy *Policy, decision *Decision) {
 	used := make([]bool, len(policy.Waivers))
 	listed := make(map[diff.Severity]int)
 	inconclusive := 0
-	for _, finding := range slices.Concat(comparison.Findings, comparison.Limited) {
-		listed[finding.Severity]++
+	for _, stored := range comparison.Findings {
+		listed[stored.Severity]++
+		finding := stored
+		// A finding's severity comes from what it is. A file saying otherwise can't downgrade it.
+		severity, known := diff.SeverityOf(finding.Kind)
+		if !known {
+			decision.Problems = append(decision.Problems, fmt.Sprintf("the report holds a kind of finding this build doesn't know: %q", finding.Kind))
+			decision.Findings = append(decision.Findings, JudgedFinding{Finding: finding, Disposition: DispositionInconclusive})
+			decision.Inconclusive++
+			continue
+		}
+		if severity != stored.Severity {
+			decision.Problems = append(decision.Problems, fmt.Sprintf("a %s finding on %s is recorded as %q", finding.Kind, finding.Route, stored.Severity))
+			finding.Severity = severity
+		}
 		judged := JudgedFinding{Finding: finding, Disposition: DispositionAllowed}
 		switch {
 		case waiverFor(finding, policy, used) != nil:
@@ -174,20 +242,33 @@ func judgeFindings(comparison *diff.Result, policy *Policy, decision *Decision) 
 		}
 		decision.Findings = append(decision.Findings, judged)
 	}
+	// A reached limit means part of the evidence was never compared. Nothing in a policy can
+	// accept that, since raising the limit is the fix.
+	for _, notice := range comparison.Limited {
+		listed[notice.Severity]++
+		decision.Findings = append(decision.Findings, JudgedFinding{Finding: notice, Disposition: DispositionInconclusive})
+		decision.Inconclusive++
+		decision.Problems = append(decision.Problems, fmt.Sprintf("%s on %s, so part of the evidence wasn't compared", notice.Kind, notice.Route))
+	}
 	for i, waiver := range policy.Waivers {
 		if !used[i] {
 			decision.UnusedWaivers = append(decision.UnusedWaivers, waiver)
 		}
 	}
-	if decision.Inconclusive > 0 {
+	if inconclusive > policy.Evidence.MaxUncertain {
 		decision.Problems = append(decision.Problems, fmt.Sprintf("%d uncertain finding(s), and %d allowed", inconclusive, policy.Evidence.MaxUncertain))
 	}
 
 	// Counts cover findings the list left out. Those can't be waived or judged by kind, so a
 	// severity the policy fails on counts in full, and anything else can't be called a pass.
+	if comparison.Truncated.Findings < 0 {
+		decision.Problems = append(decision.Problems, "the comparison's truncation figures are inconsistent")
+	}
 	unlisted := 0
+	inconsistent := false
 	for severity, count := range comparison.Counts {
 		missing := count - listed[severity]
+		inconsistent = inconsistent || count < 0 || missing < 0
 		if missing <= 0 {
 			continue
 		}
@@ -201,6 +282,9 @@ func judgeFindings(comparison *diff.Result, policy *Policy, decision *Decision) 
 	}
 	if unlisted > decision.UnlistedFailures {
 		decision.Problems = append(decision.Problems, fmt.Sprintf("%d finding(s) were left out of the report by a limit and couldn't be judged", unlisted))
+	}
+	if inconsistent {
+		decision.Problems = append(decision.Problems, "the comparison's severity counts disagree with its findings")
 	}
 }
 

@@ -100,6 +100,12 @@ func SeverityOf(kind Kind) (Severity, bool) {
 	return severity, ok
 }
 
+// IsLimitKind reports whether a kind means a limit was reached, so that part of the
+// evidence was never compared.
+func IsLimitKind(kind Kind) bool {
+	return kind == KindFieldLimitReached || kind == KindRouteLimitReached
+}
+
 // Value is one target's value in evidence. Present distinguishes a missing field from
 // one holding null, which has Type "null".
 type Value struct {

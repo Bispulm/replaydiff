@@ -87,7 +87,9 @@ func completeRun(findings ...diff.Finding) *report.Run {
 			Eligible: 3,
 			Replayed: 3,
 			Targets: map[string]*replay.TargetSummary{
-				"candidate": {Calls: 3, Statuses: map[string]int64{"2xx": 3}},
+				"baseline-a": {Calls: 3, Outcomes: map[string]int64{"ok": 3}, Statuses: map[string]int64{"2xx": 3}},
+				"baseline-b": {Calls: 3, Outcomes: map[string]int64{"ok": 3}, Statuses: map[string]int64{"2xx": 3}},
+				"candidate":  {Calls: 3, Outcomes: map[string]int64{"ok": 3}, Statuses: map[string]int64{"2xx": 3}},
 			},
 		},
 		Comparison: &diff.Result{Counts: counts, Coverage: diff.Coverage{Records: 3, Compared: 3}, Findings: findings},
@@ -169,23 +171,36 @@ func TestReportRejectsBadInput(t *testing.T) {
 	}
 	valid := writeRun(t, completeRun())
 	for name, args := range map[string][]string{
-		"no file":         {"report"},
-		"two files":       {"report", valid, valid},
-		"missing file":    {"report", filepath.Join(dir, "absent.json")},
-		"not json":        {"report", write("bad.json", "nope")},
-		"unknown schema":  {"report", write("other.json", `{"schema":"other/v9"}`)},
-		"unknown field":   {"report", write("field.json", `{"schema":"replaydiff.run/v1","extra":1}`)},
-		"missing summary": {"report", write("empty.json", `{"schema":"replaydiff.run/v1"}`)},
-		"bad policy file": {"report", valid, "--policy", write("policy.yaml", "fail_ons: []")},
-		"absent policy":   {"report", valid, "--policy", filepath.Join(dir, "absent.yaml")},
-		"bad fail-on":     {"report", valid, "--fail-on", "nonsense"},
-		"unknown flag":    {"report", valid, "--nope"},
+		"no file":                  {"report"},
+		"two files":                {"report", valid, valid},
+		"missing file":             {"report", filepath.Join(dir, "absent.json")},
+		"not json":                 {"report", write("bad.json", "nope")},
+		"unknown schema":           {"report", write("other.json", `{"schema":"other/v9"}`)},
+		"unknown field":            {"report", write("field.json", `{"schema":"replaydiff.run/v1","extra":1}`)},
+		"missing summary":          {"report", write("empty.json", `{"schema":"replaydiff.run/v1"}`)},
+		"bad policy file":          {"report", valid, "--policy", write("policy.yaml", "fail_ons: []")},
+		"absent policy":            {"report", valid, "--policy", filepath.Join(dir, "absent.yaml")},
+		"bad fail-on":              {"report", valid, "--fail-on", "nonsense"},
+		"fail-on without breaking": {"report", valid, "--fail-on", "warning"},
+		"null target":              {"report", write("nulltarget.json", `{"schema":"replaydiff.run/v1","summary":{"targets":{"candidate":null}}}`)},
+		"unknown flag":             {"report", valid, "--nope"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if code, _, _ := runCLI(args...); code != ExitFailure {
 				t.Fatalf("exit code = %d", code)
 			}
 		})
+	}
+}
+
+func TestRunRejectsANonFiniteRate(t *testing.T) {
+	dir := t.TempDir()
+	policy := writePolicy(t, "")
+	a, b, c := "http://127.0.0.1:1", "http://127.0.0.1:2", "http://127.0.0.1:3"
+	code, _, stderr := runCLI("run", "--traffic", dir, "--redact", policy, "--report", filepath.Join(dir, "r.json"),
+		"--baseline-a", a, "--baseline-b", b, "--candidate", c, "--allow-origin", a, "--allow-origin", b, "--allow-origin", c, "--rps", "NaN")
+	if code != ExitFailure || !strings.Contains(stderr, "rate") {
+		t.Fatalf("exit %d: %s", code, stderr)
 	}
 }
 

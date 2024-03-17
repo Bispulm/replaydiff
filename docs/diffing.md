@@ -157,8 +157,8 @@ Reaching a limit never hides anything silently:
 - Past `max_findings`, the list is cut, the severity counts stay complete, and `truncated` says how
   many were left out. The most severe findings come first.
 - Past `max_fields_per_route` or `max_routes`, an uncertain notice appears in `limited`. Those fields
-  aren't checked, and those routes are grouped together under `(other routes)`. `run` exits 2, because
-  part of the evidence wasn't compared.
+  aren't checked, and those routes are grouped together under `(other routes)`. `run` exits 2 and the gate
+  can't pass, because part of the evidence wasn't compared. Raise the limit to resolve it.
 
 ## Known limits
 
