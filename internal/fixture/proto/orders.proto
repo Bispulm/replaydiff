@@ -1,0 +1,73 @@
+// A synthetic service used for tests and demos. All data is invented.
+syntax = "proto3";
+
+package fixture.orders.v1;
+
+import "google/protobuf/any.proto";
+
+enum OrderStatus {
+  ORDER_STATUS_UNSPECIFIED = 0;
+  ORDER_STATUS_PENDING = 1;
+  ORDER_STATUS_SHIPPED = 2;
+}
+
+message Customer {
+  string id = 1;
+  string email = 2;
+  string tier = 3;
+}
+
+message Item {
+  string sku = 1;
+  int32 qty = 2;
+}
+
+message Shipment {
+  string carrier = 1;
+}
+
+message Order {
+  string id = 1;
+  OrderStatus status = 2;
+  int64 total_cents = 3;
+  string currency = 4;
+  Customer customer = 5;
+  repeated Item items = 6;
+  map<string, string> labels = 7;
+  oneof payment {
+    string card_last4 = 8;
+    string invoice_id = 9;
+  }
+  optional string note = 10;
+  bytes checksum = 11;
+  string server_time = 12;
+  string request_id = 13;
+  double weight = 14;
+  Shipment shipment = 15;
+  repeated string tags = 16;
+  google.protobuf.Any extension = 17;
+}
+
+message GetOrderRequest {
+  string id = 1;
+  string auth_token = 2;
+}
+
+message CreateOrderRequest {
+  string sku = 1;
+}
+
+message GetCatalogRequest {}
+
+message Catalog {
+  repeated string skus = 1;
+  string generated_at = 2;
+  string request_id = 3;
+}
+
+service OrderService {
+  rpc GetOrder(GetOrderRequest) returns (Order);
+  rpc CreateOrder(CreateOrderRequest) returns (Order);
+  rpc GetCatalog(GetCatalogRequest) returns (Catalog);
+  rpc WatchOrders(GetOrderRequest) returns (stream Order);
+}

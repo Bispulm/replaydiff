@@ -1,4 +1,4 @@
-.PHONY: build test race lint vuln secrets check
+.PHONY: build test race lint vuln secrets check proto
 
 build:
 	go build -o bin/ ./cmd/...
@@ -26,3 +26,8 @@ demo:
 
 gate-demo:
 	./scripts/gate-demo.sh
+
+# Regenerates the fixture's descriptor set. Needs protoc.
+proto:
+	protoc --proto_path=internal/fixture/proto --include_imports \
+		--descriptor_set_out=internal/fixture/proto/orders.binpb orders.proto
