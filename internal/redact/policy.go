@@ -12,6 +12,7 @@ import (
 	"io"
 	"mime"
 	"os"
+	"regexp"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -66,8 +67,10 @@ func ParsePolicy(data []byte) (*Policy, error) {
 }
 
 func (p *Policy) validate() error {
-	if len(p.ProtoFields) > 0 {
-		return errors.New("proto_fields isn't supported yet: refusing to accept rules that wouldn't be applied")
+	for _, field := range p.ProtoFields {
+		if !protoFieldName.MatchString(field) {
+			return fmt.Errorf("proto_fields: %q must be a full field name such as package.Message.field", field)
+		}
 	}
 	for _, name := range p.Headers {
 		if strings.TrimSpace(name) == "" {
@@ -124,6 +127,10 @@ func parseSessionSource(source string) (kind, name string, err error) {
 		return "", "", fmt.Errorf("source %q: kind must be cookie, header or query", source)
 	}
 }
+
+// protoFieldName matches a full field name: at least a message and a field, each a
+// Protocol Buffers identifier. Whether it exists is checked against the descriptor set.
+var protoFieldName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$`)
 
 const formMediaType = "application/x-www-form-urlencoded"
 

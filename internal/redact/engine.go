@@ -20,7 +20,9 @@ import (
 	"strings"
 
 	"github.com/klauspost/compress/zstd"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"github.com/Bispulm/replaydiff/internal/protoset"
 	"github.com/Bispulm/replaydiff/internal/traffic"
 )
 
@@ -165,6 +167,9 @@ type Options struct {
 	// SessionSecret keys session digests. Nil generates a random secret, which
 	// limits correlation to the engine's lifetime.
 	SessionSecret []byte
+	// Descriptors interpret gRPC messages. Without them, gRPC bodies can't be
+	// sanitized and are never stored.
+	Descriptors *protoset.Set
 }
 
 // Engine applies a Policy. It is safe for concurrent use.
@@ -178,6 +183,8 @@ type Engine struct {
 	sessionSecret   []byte
 	maxDecompressed int64
 	zdec            *zstd.Decoder
+	descriptors     *protoset.Set
+	protoRules      map[protoreflect.FullName]string
 }
 
 // NewEngine compiles a policy. Close releases its resources.
@@ -223,6 +230,19 @@ func NewEngine(policy *Policy, opts Options) (*Engine, error) {
 		}
 		e.sessionSources = append(e.sessionSources, [2]string{kind, name})
 	}
+	e.descriptors = opts.Descriptors
+	e.protoRules = make(map[protoreflect.FullName]string, len(policy.ProtoFields))
+	if len(policy.ProtoFields) > 0 && opts.Descriptors == nil {
+		return nil, errors.New("proto_fields need a descriptor set to resolve against")
+	}
+	for _, name := range policy.ProtoFields {
+		// A rule naming a field that doesn't exist would silently protect nothing.
+		field, err := opts.Descriptors.Field(name)
+		if err != nil {
+			return nil, fmt.Errorf("proto_fields: %w", err)
+		}
+		e.protoRules[field.FullName()] = name
+	}
 	if len(e.sessionSecret) == 0 {
 		e.sessionSecret = make([]byte, 32)
 		if _, err := rand.Read(e.sessionSecret); err != nil {
@@ -242,6 +262,9 @@ func NewEngine(policy *Policy, opts Options) (*Engine, error) {
 
 // Close releases the engine's resources.
 func (e *Engine) Close() { e.zdec.Close() }
+
+// Descriptors returns the descriptor set gRPC bodies are interpreted with, or nil.
+func (e *Engine) Descriptors() *protoset.Set { return e.descriptors }
 
 // PolicyDigest identifies the policy this engine applies.
 func (e *Engine) PolicyDigest() string { return e.policyDigest }
