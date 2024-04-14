@@ -46,6 +46,7 @@ message Order {
   Shipment shipment = 15;
   repeated string tags = 16;
   google.protobuf.Any extension = 17;
+  map<string, Customer> contacts = 18;
 }
 
 message GetOrderRequest {
