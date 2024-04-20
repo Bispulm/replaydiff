@@ -660,3 +660,32 @@ func TestEngineIsSafeForConcurrentUse(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// Binary metadata is opaque, and grpc-message is free text that servers fill with whatever
+// went wrong. Neither can be checked against rules, so neither is kept.
+func TestGRPCMetadataThatCouldHoldAnythingIsMasked(t *testing.T) {
+	engine := newEngine(t, "")
+	secret := sentinel(t)
+	got := engine.Headers(ResponseTrailer, http.Header{
+		"Grpc-Status":             {"5"},
+		"Grpc-Message":            {"order for " + secret + " not found"},
+		"Grpc-Status-Details-Bin": {secret},
+		"X-Trace-Bin":             {secret},
+		"Grpc-Encoding":           {"gzip"},
+		"Grpc-Accept-Encoding":    {"gzip"},
+	}, &Hits{})
+	assertAbsent(t, secret, got)
+	if !reflect.DeepEqual(got["Grpc-Status"], []string{"5"}) {
+		t.Fatalf("status must be kept: %v", got)
+	}
+	for _, name := range []string{"Grpc-Message", "Grpc-Status-Details-Bin", "X-Trace-Bin"} {
+		if !reflect.DeepEqual(got[name], []string{Placeholder}) {
+			t.Errorf("%s = %v", name, got[name])
+		}
+	}
+	for _, name := range []string{"Grpc-Encoding", "Grpc-Accept-Encoding"} {
+		if _, ok := got[name]; ok {
+			t.Errorf("%s describes the original bytes and must not be stored", name)
+		}
+	}
+}
