@@ -37,7 +37,9 @@ type spec struct {
 	replay  *traffic.ReplayInfo
 	hits    []traffic.RedactionHit
 
-	protocol traffic.Protocol
+	protocol   traffic.Protocol
+	rpc        string
+	descriptor string
 }
 
 func writeDataset(t *testing.T, specs []spec) string {
@@ -67,9 +69,13 @@ func writeDataset(t *testing.T, specs []spec) string {
 				Headers:  s.headers,
 				Body:     s.body,
 			},
+			RPC:       s.rpc,
 			Outcome:   traffic.Outcome{Transport: traffic.TransportOK},
 			Redaction: traffic.Redaction{Complete: true, Hits: s.hits},
 			Replay:    traffic.ReplayInfo{Eligible: true},
+		}
+		if s.descriptor != "" {
+			rec.Descriptor = &traffic.DescriptorRef{SetDigest: s.descriptor}
 		}
 		if rec.Request.Body.State == "" {
 			rec.Request.Body.State = traffic.BodyEmpty
@@ -467,9 +473,9 @@ func TestGRPCIsNotReplayedByAllowingPost(t *testing.T) {
 	c := newCluster(t, nil)
 	cfg := c.config()
 	cfg.AllowMethods = []string{http.MethodPost}
-	specs := []spec{{method: http.MethodPost, path: "/orders.v1.Orders/Delete", protocol: traffic.ProtocolGRPC}}
+	specs := []spec{{method: http.MethodPost, path: "/orders.v1.Orders/Delete", rpc: "/orders.v1.Orders/Delete", protocol: traffic.ProtocolGRPC}}
 	summary, _ := mustRun(t, mustEngine(t, cfg), scan(t, writeDataset(t, specs)))
-	if len(c.a.seen()) != 0 || summary.Skipped[SkipUnsupportedProtocol] != 1 {
+	if len(c.a.seen()) != 0 || summary.Skipped[SkipRPCNotAllowed] != 1 {
 		t.Fatalf("seen = %v, summary = %+v", c.a.seen(), summary)
 	}
 }
