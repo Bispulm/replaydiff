@@ -62,10 +62,18 @@ const (
 	KindErrorRateRegression         Kind = "error_rate_regression"
 	KindFieldLimitReached           Kind = "field_limit_reached"
 	KindRouteLimitReached           Kind = "route_limit_reached"
+	KindGRPCErrorIntroduced         Kind = "grpc_error_introduced"
+	KindGRPCStatusChanged           Kind = "grpc_status_changed"
+	KindMapEntryRemoved             Kind = "map_entry_removed"
+	KindMapEntryAdded               Kind = "map_entry_added"
 )
 
 var kindSeverity = map[Kind]Severity{
 	KindStatusClassChanged:          SeverityBreaking,
+	KindGRPCErrorIntroduced:         SeverityBreaking,
+	KindGRPCStatusChanged:           SeverityWarning,
+	KindMapEntryRemoved:             SeverityWarning,
+	KindMapEntryAdded:               SeverityInfo,
 	KindCandidateCallFailed:         SeverityBreaking,
 	KindBodyRemoved:                 SeverityBreaking,
 	KindBodyInvalid:                 SeverityBreaking,

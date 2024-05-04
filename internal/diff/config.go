@@ -326,7 +326,26 @@ func newRouteClassifier(patterns []string, limit int) (*routeClassifier, error) 
 }
 
 func (r *routeClassifier) route(method, path string) string {
-	name := r.name(method, path)
+	return r.register(r.name(method, path))
+}
+
+// routeRPC names a gRPC call's route. A configured pattern still applies, but the
+// heuristic for IDs doesn't: a method path has none, and a package such as orders.v2
+// would otherwise be mistaken for one.
+func (r *routeClassifier) routeRPC(method, rpc string) string {
+	for _, pattern := range r.patterns {
+		if pattern.matches(method, rpc) {
+			return r.register(pattern.text)
+		}
+	}
+	name := method + " " + rpc
+	if len(name) > maxRouteBytes {
+		name = name[:maxRouteBytes] + "..."
+	}
+	return r.register(name)
+}
+
+func (r *routeClassifier) register(name string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.known[name] {
