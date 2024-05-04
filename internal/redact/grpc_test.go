@@ -238,25 +238,49 @@ func mustMessage(t *testing.T, set *protoset.Set, name string) protoreflect.Mess
 	return descriptor
 }
 
+// clobberedMapKey is an Order whose map entry repeats its key with the wrong wire type,
+// which makes protobuf-go's decoder panic for a dynamic message.
+func clobberedMapKey(field protowire.Number) []byte {
+	entry := protowire.AppendTag(nil, 1, protowire.BytesType)
+	entry = protowire.AppendString(entry, "k")
+	entry = protowire.AppendTag(entry, 1, protowire.VarintType)
+	entry = protowire.AppendVarint(entry, 0)
+	order := protowire.AppendTag(nil, field, protowire.BytesType)
+	return protowire.AppendBytes(order, entry)
+}
+
+func anyHolding(typeURL string, value []byte) []byte {
+	anyMessage := protowire.AppendTag(nil, 1, protowire.BytesType)
+	anyMessage = protowire.AppendString(anyMessage, typeURL)
+	anyMessage = protowire.AppendTag(anyMessage, 2, protowire.BytesType)
+	anyMessage = protowire.AppendBytes(anyMessage, value)
+	order := protowire.AppendTag(nil, 17, protowire.BytesType)
+	return protowire.AppendBytes(order, anyMessage)
+}
+
 func TestGRPCBodiesThatCannotBeSanitizedAreOmitted(t *testing.T) {
 	set := fixtureSet(t)
 	engine := protoEngine(t, protoPolicy, set)
 	secret := sentinel(t)
 	valid := messageFrom(t, set, "fixture.orders.v1.Order", `{"id":"`+secret+`"}`)
 	bomb := gzipped(t, bytes.Repeat([]byte{0}, 4<<20))
+	orderURL := "type.googleapis.com/fixture.orders.v1.Order"
 	for name, tc := range map[string]struct {
 		in     GRPCInput
 		reason string
 	}{
-		"truncated frame":      {GRPCInput{RPC: getOrder, Data: framed(valid)[:10]}, ReasonGRPCMalformedFrame},
-		"two messages":         {GRPCInput{RPC: getOrder, Data: append(framed(valid), framed(valid)...)}, ReasonGRPCStreaming},
-		"streaming method":     {GRPCInput{RPC: watchOrders, Data: framed(valid)}, ReasonGRPCStreaming},
-		"unknown method":       {GRPCInput{RPC: "/fixture.orders.v1.OrderService/Nope", Data: framed(valid)}, ReasonProtoMethodUnknown},
-		"not a message":        {GRPCInput{RPC: getOrder, Data: framed([]byte{0xff, 0xff, 0xff, 0xff, 0x0f})}, ReasonProtoMalformed},
-		"flag without codec":   {GRPCInput{RPC: getOrder, Data: grpcwire.AppendFrame(nil, valid, true)}, ReasonGRPCMalformedFrame},
-		"unsupported encoding": {GRPCInput{RPC: getOrder, Encoding: "snappy", Data: grpcwire.AppendFrame(nil, valid, true)}, ReasonUnsupportedEncoding},
-		"bad compression":      {GRPCInput{RPC: getOrder, Encoding: "gzip", Data: grpcwire.AppendFrame(nil, valid, true)}, ReasonMalformedCompression},
-		"decompression bomb":   {GRPCInput{RPC: getOrder, Encoding: "gzip", Data: grpcwire.AppendFrame(nil, bomb, true)}, ReasonDecompressedTooLarge},
+		"truncated frame":       {GRPCInput{RPC: getOrder, Data: framed(valid)[:10]}, ReasonGRPCMalformedFrame},
+		"two messages":          {GRPCInput{RPC: getOrder, Data: append(framed(valid), framed(valid)...)}, ReasonGRPCStreaming},
+		"streaming method":      {GRPCInput{RPC: watchOrders, Data: framed(valid)}, ReasonGRPCStreaming},
+		"unknown method":        {GRPCInput{RPC: "/fixture.orders.v1.OrderService/Nope", Data: framed(valid)}, ReasonProtoMethodUnknown},
+		"not a message":         {GRPCInput{RPC: getOrder, Data: framed([]byte{0xff, 0xff, 0xff, 0xff, 0x0f})}, ReasonProtoMalformed},
+		"map key clobbered":     {GRPCInput{RPC: getOrder, Data: framed(clobberedMapKey(7))}, ReasonProtoMalformed},
+		"message map clobbered": {GRPCInput{RPC: getOrder, Data: framed(clobberedMapKey(18))}, ReasonProtoMalformed},
+		"clobbered inside Any":  {GRPCInput{RPC: getOrder, Data: framed(anyHolding(orderURL, clobberedMapKey(7)))}, ReasonProtoAnyUnresolved},
+		"flag without codec":    {GRPCInput{RPC: getOrder, Data: grpcwire.AppendFrame(nil, valid, true)}, ReasonGRPCMalformedFrame},
+		"unsupported encoding":  {GRPCInput{RPC: getOrder, Encoding: "snappy", Data: grpcwire.AppendFrame(nil, valid, true)}, ReasonUnsupportedEncoding},
+		"bad compression":       {GRPCInput{RPC: getOrder, Encoding: "gzip", Data: grpcwire.AppendFrame(nil, valid, true)}, ReasonMalformedCompression},
+		"decompression bomb":    {GRPCInput{RPC: getOrder, Encoding: "gzip", Data: grpcwire.AppendFrame(nil, bomb, true)}, ReasonDecompressedTooLarge},
 	} {
 		t.Run(name, func(t *testing.T) {
 			res := engine.GRPCBody(ResponseBody, tc.in, &Hits{})

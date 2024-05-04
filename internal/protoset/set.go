@@ -22,6 +22,25 @@ import (
 // ErrUnknownMethod means an RPC isn't described by the set.
 var ErrUnknownMethod = errors.New("method isn't in the descriptor set")
 
+// ErrMalformed means bytes didn't decode as the message.
+var ErrMalformed = errors.New("malformed protobuf message")
+
+// Unmarshal decodes untrusted bytes into a message. protobuf-go can panic rather than
+// fail on a malformed map entry in a dynamic message (as of v1.36.12, when the entry
+// repeats its key with the wrong wire type), so a panic is reported as ErrMalformed. The
+// message's contents are undefined after an error.
+func Unmarshal(data []byte, message proto.Message) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = fmt.Errorf("%w: the decoder failed", ErrMalformed)
+		}
+	}()
+	if err := proto.Unmarshal(data, message); err != nil {
+		return fmt.Errorf("%w: %w", ErrMalformed, err)
+	}
+	return nil
+}
+
 // MethodDescriptor describes an RPC.
 type MethodDescriptor = protoreflect.MethodDescriptor
 

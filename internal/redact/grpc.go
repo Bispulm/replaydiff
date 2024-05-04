@@ -108,7 +108,7 @@ func (e *Engine) GRPCBody(location Location, in GRPCInput, hits *Hits) GRPCResul
 		descriptor = method.Input()
 	}
 	message := dynamicpb.NewMessage(descriptor)
-	if err := proto.Unmarshal(payload, message); err != nil {
+	if err := protoset.Unmarshal(payload, message); err != nil {
 		return omit(ReasonProtoMalformed)
 	}
 	var walk protoWalk
@@ -223,7 +223,7 @@ func (e *Engine) sanitizeAny(location Location, message protoreflect.Message, hi
 		return
 	}
 	inner := dynamicpb.NewMessage(descriptor)
-	if err := proto.Unmarshal(value, inner); err != nil {
+	if err := protoset.Unmarshal(value, inner); err != nil {
 		walk.anyUnresolved = true
 		return
 	}
