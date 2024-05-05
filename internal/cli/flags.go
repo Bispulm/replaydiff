@@ -16,7 +16,33 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/Bispulm/replaydiff/internal/protoset"
+	"github.com/Bispulm/replaydiff/internal/redact"
 )
+
+const descriptorSetUsage = "compiled descriptor set (protoc --descriptor_set_out with --include_imports) that gRPC messages are read with"
+
+// loadDescriptors reads the --descriptor-set file. With no path there is no set, and gRPC
+// bodies can't be interpreted.
+func loadDescriptors(path string) (*protoset.Set, error) {
+	if path == "" {
+		return nil, nil //nolint:nilnil // No set is a valid configuration.
+	}
+	set, err := protoset.Load(path)
+	if err != nil {
+		return nil, fmt.Errorf("--descriptor-set: %w", err)
+	}
+	return set, nil
+}
+
+// newSanitizer builds a redaction engine, naming the flag that protobuf rules need.
+func newSanitizer(policy *redact.Policy, opts redact.Options) (*redact.Engine, error) {
+	if len(policy.ProtoFields) > 0 && opts.Descriptors == nil {
+		return nil, errors.New("the policy's proto_fields need --descriptor-set to resolve against")
+	}
+	return redact.NewEngine(policy, opts)
+}
 
 // parseFlags parses args into fs. A nil error with help true means help was
 // requested. Parse errors are written to stderr by the flag package.
