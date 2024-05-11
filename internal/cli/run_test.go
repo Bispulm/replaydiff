@@ -13,6 +13,8 @@ import (
 	"github.com/Bispulm/replaydiff/internal/report"
 )
 
+const getOrderRPC = "/fixture.orders.v1.OrderService/GetOrder"
+
 func runCLI(args ...string) (int, string, string) {
 	var out, errOut bytes.Buffer
 	code := Run(context.Background(), args, &out, &errOut)
@@ -33,21 +35,27 @@ func TestRunRejectsInvalidInvocations(t *testing.T) {
 		args []string
 		want string
 	}{
-		"no traffic":         {[]string{"run", "--redact", policy, "--baseline-a", a, "--baseline-b", b, "--candidate", c, "--report", report}, "--traffic"},
-		"no candidate":       {[]string{"run", "--redact", policy, "--traffic", dir, "--baseline-a", a, "--baseline-b", b, "--report", report}, "--candidate"},
-		"no report":          {[]string{"run", "--redact", policy, "--traffic", dir, "--baseline-a", a, "--baseline-b", b, "--candidate", c}, "--report"},
-		"no policy":          {[]string{"run", "--traffic", dir, "--baseline-a", a, "--baseline-b", b, "--candidate", c, "--report", report, "--allow-origin", a}, "--redact"},
-		"missing policy":     {append(base(allowAll...), "--redact", policy+".absent"), "policy"},
-		"bad diff config":    {base(append(allowAll, "--diff-config", policy+".absent")...), "diff config"},
-		"invalid diff rule":  {base(append(allowAll, "--diff-config", writePolicy(t, "ignores: []"))...), "diff config"},
-		"no allowlist":       {base(), "--allow-origin"},
-		"candidate unlisted": {base("--allow-origin", a, "--allow-origin", b), "allowlist"},
-		"bad credential":     {base(append(allowAll, "--target-credential", "nonsense")...), "ROLE:Header=ENV_VAR"},
-		"unknown role":       {base(append(allowAll, "--target-credential", "other:A=B")...), "unknown role"},
-		"unset credential":   {base(append(allowAll, "--target-credential", "candidate:A=REPLAYDIFF_TEST_UNSET")...), "REPLAYDIFF_TEST_UNSET"},
-		"trace allowed":      {base(append(allowAll, "--allow-method", "TRACE")...), "TRACE"},
-		"empty dataset":      {base(allowAll...), "no traffic segments"},
-		"missing ca file":    {base(append(allowAll, "--target-ca-file", report+".absent")...), "--target-ca-file"},
+		"no traffic":          {[]string{"run", "--redact", policy, "--baseline-a", a, "--baseline-b", b, "--candidate", c, "--report", report}, "--traffic"},
+		"no candidate":        {[]string{"run", "--redact", policy, "--traffic", dir, "--baseline-a", a, "--baseline-b", b, "--report", report}, "--candidate"},
+		"no report":           {[]string{"run", "--redact", policy, "--traffic", dir, "--baseline-a", a, "--baseline-b", b, "--candidate", c}, "--report"},
+		"no policy":           {[]string{"run", "--traffic", dir, "--baseline-a", a, "--baseline-b", b, "--candidate", c, "--report", report, "--allow-origin", a}, "--redact"},
+		"missing policy":      {append(base(allowAll...), "--redact", policy+".absent"), "policy"},
+		"bad diff config":     {base(append(allowAll, "--diff-config", policy+".absent")...), "diff config"},
+		"invalid diff rule":   {base(append(allowAll, "--diff-config", writePolicy(t, "ignores: []"))...), "diff config"},
+		"no allowlist":        {base(), "--allow-origin"},
+		"candidate unlisted":  {base("--allow-origin", a, "--allow-origin", b), "allowlist"},
+		"bad credential":      {base(append(allowAll, "--target-credential", "nonsense")...), "ROLE:Header=ENV_VAR"},
+		"unknown role":        {base(append(allowAll, "--target-credential", "other:A=B")...), "unknown role"},
+		"unset credential":    {base(append(allowAll, "--target-credential", "candidate:A=REPLAYDIFF_TEST_UNSET")...), "REPLAYDIFF_TEST_UNSET"},
+		"trace allowed":       {base(append(allowAll, "--allow-method", "TRACE")...), "TRACE"},
+		"empty dataset":       {base(allowAll...), "no traffic segments"},
+		"missing ca file":     {base(append(allowAll, "--target-ca-file", report+".absent")...), "--target-ca-file"},
+		"missing descriptors": {base(append(allowAll, "--descriptor-set", report+".absent")...), "descriptor set"},
+		"rpc without set":     {base(append(allowAll, "--target-h2c", "--allow-rpc", getOrderRPC)...), "descriptor set"},
+		"unknown rpc":         {base(append(allowAll, "--target-h2c", "--descriptor-set", fixtureDescriptors, "--allow-rpc", "/fixture.orders.v1.OrderService/Nope")...), "OrderService/Nope"},
+		"streaming rpc":       {base(append(allowAll, "--target-h2c", "--descriptor-set", fixtureDescriptors, "--allow-rpc", "/fixture.orders.v1.OrderService/WatchOrders")...), "streams"},
+		"rpc over http/1.1":   {base(append(allowAll, "--descriptor-set", fixtureDescriptors, "--allow-rpc", getOrderRPC)...), "gRPC needs HTTP/2"},
+		"proto rule, no set":  {append(base(allowAll...), "--redact", writePolicy(t, "proto_fields: [fixture.orders.v1.Customer.email]")), "--descriptor-set"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			code, _, stderr := runCLI(tc.args...)
