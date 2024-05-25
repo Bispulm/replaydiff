@@ -47,3 +47,31 @@ missing one is a regression the tool failed to find.
 
 `--h2c` serves only HTTP/2 without TLS. `--tls-cert` and `--tls-key` serve TLS and
 negotiate HTTP/2.
+
+## gRPC
+
+`--grpc` serves `fixture.orders.v1.OrderService` over HTTP/2 without TLS, instead of HTTP.
+The schema is `internal/fixture/proto/orders.proto`, and `make proto` compiles it to
+`orders.binpb`, the descriptor set the fixture and the tests use.
+
+| Method | Purpose |
+|---|---|
+| `GetOrder` | Carries the regressions below |
+| `GetCatalog` | The control: no regressions, only explained noise |
+| `CreateOrder` | A mutating call, which replay must skip unless allowed |
+| `WatchOrders` | Server streaming, which capture forwards but doesn't store |
+
+The gRPC acceptance test requires exactly these findings:
+
+| Call | Change | Expected finding |
+|---|---|---|
+| `GetOrder` | Optional `note` unset | Breaking `field_removed` |
+| `GetOrder` | Message `shipment` unset | Breaking `field_removed` |
+| `GetOrder` | `oneof payment` switches from `card_last4` to `invoice_id` | Breaking `field_removed`, info `field_added` |
+| `GetOrder` | Enum `status` changes | Warning `value_changed` |
+| `GetOrder` | Map `labels` loses `region` and gains `experiment` | Warning `map_entry_removed`, info `map_entry_added` |
+| `GetOrder` for `ord-missing` | `not_found` becomes `internal` | Breaking `grpc_error_introduced` |
+| `GetOrder` for `ord-unavailable` | OK becomes `unavailable` | Breaking `grpc_error_introduced` |
+| `GetOrder`, 20 calls | The two faults above | Warning `error_rate_regression` |
+
+`server_time`, `generated_at` and `request_id` vary per call, as over HTTP.

@@ -21,7 +21,7 @@ flowchart LR
     G --> OUT[Exit code, JUnit, Markdown, JSON]
 ```
 
-gRPC and deployment are planned. The README's status table shows what exists today.
+Deployment is planned. The README's status table shows what exists today.
 
 ## Capture
 
