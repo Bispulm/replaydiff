@@ -21,6 +21,7 @@ const (
 	ReasonProtoMalformed         = "proto_malformed"
 	ReasonProtoUnknownFields     = "proto_unknown_fields"
 	ReasonProtoAnyUnresolved     = "proto_any_unresolved"
+	ReasonProtoAnyTooDeep        = "proto_any_too_deep"
 )
 
 // grpcContentType is how stored gRPC bodies are labeled. They hold one message, with
@@ -52,6 +53,9 @@ type GRPCResult struct {
 type protoWalk struct {
 	unknown       bool
 	anyUnresolved bool
+	anyTooDeep    bool
+	// anyDepth counts the Any messages being unpacked around the current one.
+	anyDepth int
 }
 
 // GRPCBody sanitizes a unary call's body with the descriptor set. As with other bodies,
@@ -113,6 +117,10 @@ func (e *Engine) GRPCBody(location Location, in GRPCInput, hits *Hits) GRPCResul
 	}
 	var walk protoWalk
 	e.sanitizeMessage(location, message, hits, &walk)
+	if walk.anyTooDeep {
+		// Levels past the limit weren't sanitized, so the message can't even be compared.
+		return omit(ReasonProtoAnyTooDeep)
+	}
 	result.Message = message
 	switch {
 	case walk.unknown:
@@ -217,6 +225,12 @@ func (e *Engine) sanitizeAny(location Location, message protoreflect.Message, hi
 	if typeURL == "" && len(value) == 0 {
 		return
 	}
+	if walk.anyDepth >= protoset.MaxAnyDepth {
+		walk.anyTooDeep = true
+		return
+	}
+	walk.anyDepth++
+	defer func() { walk.anyDepth-- }()
 	descriptor, err := e.descriptors.MessageByURL(typeURL)
 	if err != nil {
 		walk.anyUnresolved = true
