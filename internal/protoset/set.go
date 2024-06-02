@@ -35,13 +35,16 @@ var ErrMalformed = errors.New("malformed protobuf message")
 // fail on a malformed map entry in a dynamic message (as of v1.36.12, when the entry
 // repeats its key with the wrong wire type), so a panic is reported as ErrMalformed. The
 // message's contents are undefined after an error.
+//
+// Required fields aren't checked. A missing one is a difference to report, and redaction
+// itself clears covered required fields.
 func Unmarshal(data []byte, message proto.Message) (err error) {
 	defer func() {
 		if recover() != nil {
 			err = fmt.Errorf("%w: the decoder failed", ErrMalformed)
 		}
 	}()
-	if err := proto.Unmarshal(data, message); err != nil {
+	if err := (proto.UnmarshalOptions{AllowPartial: true}).Unmarshal(data, message); err != nil {
 		return fmt.Errorf("%w: %w", ErrMalformed, err)
 	}
 	return nil
