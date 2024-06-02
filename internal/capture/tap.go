@@ -19,6 +19,9 @@ const (
 	// ReasonGRPCUnsupportedCodec means a gRPC call carried messages in a format other
 	// than Protocol Buffers, which can't be interpreted.
 	ReasonGRPCUnsupportedCodec = "grpc_unsupported_codec"
+	// ReasonAmbiguousContentType means the body had more than one Content-Type. Servers
+	// resolve that differently, so no one reading of it can be trusted.
+	ReasonAmbiguousContentType = "ambiguous_content_type"
 )
 
 // memoryBudget bounds the bytes held across all in-flight and queued bodies.
