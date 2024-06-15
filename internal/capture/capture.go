@@ -746,7 +746,7 @@ func (c *Capture) sanitizeExchange(ex *exchange) *traffic.Record {
 		}
 		// HTTP and gRPC status are separate: a failed call normally still has HTTP 200.
 		if grpcKind != grpcwire.KindNone {
-			if code, ok := grpcwire.Status(ex.resHeader, ex.resTrailer); ok {
+			if code, ok := grpcwire.Status(ex.resHeader, ex.resTrailer, ex.emptyResponse); ok {
 				rec.Response.GRPCStatus = &code
 			}
 		}

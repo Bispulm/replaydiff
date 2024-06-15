@@ -77,16 +77,21 @@ func TestParseFramesDoesNotCopyOrAllocateByTheDeclaredLength(t *testing.T) {
 }
 
 func TestStatusComesFromTrailersOrAHeadersOnlyResponse(t *testing.T) {
-	code, ok := Status(http.Header{"Content-Type": {"application/grpc"}}, http.Header{"Grpc-Status": {"5"}})
+	code, ok := Status(http.Header{"Content-Type": {"application/grpc"}}, http.Header{"Grpc-Status": {"5"}}, false)
 	if !ok || code != 5 {
 		t.Fatalf("trailers: %d, %t", code, ok)
 	}
-	// Trailers-Only: the status arrives in the only HEADERS block.
-	code, ok = Status(http.Header{"Grpc-Status": {"7"}}, nil)
+	// Trailers-Only: the status arrives in the only HEADERS block, which ends the stream.
+	code, ok = Status(http.Header{"Grpc-Status": {"7"}}, nil, true)
 	if !ok || code != 7 {
 		t.Fatalf("trailers-only: %d, %t", code, ok)
 	}
-	code, ok = Status(http.Header{"Grpc-Status": {"7"}}, http.Header{"Grpc-Status": {"0"}})
+	// Headers that didn't end the stream aren't where a status belongs, and a client
+	// ignores one there and reports the missing trailers instead.
+	if code, ok = Status(http.Header{"Grpc-Status": {"7"}}, nil, false); ok {
+		t.Fatalf("status in headers that didn't end the stream: %d", code)
+	}
+	code, ok = Status(http.Header{"Grpc-Status": {"7"}}, http.Header{"Grpc-Status": {"0"}}, false)
 	if !ok || code != 0 {
 		t.Fatalf("trailers must win: %d, %t", code, ok)
 	}
@@ -97,7 +102,7 @@ func TestStatusComesFromTrailersOrAHeadersOnlyResponse(t *testing.T) {
 		"too large":    {"Grpc-Status": {"256"}},
 		"empty":        {"Grpc-Status": {""}},
 	} {
-		if _, ok := Status(header, nil); ok {
+		if _, ok := Status(header, nil, true); ok {
 			t.Errorf("%s: want no status", name)
 		}
 	}

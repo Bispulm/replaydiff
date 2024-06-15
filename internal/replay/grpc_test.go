@@ -281,3 +281,39 @@ func TestHTTPRecordsWithAGRPCContentTypeAreNotSent(t *testing.T) {
 		})
 	}
 }
+
+// A proxy that flushes early sends a Trailers-Only status in headers that don't end the
+// stream, then ends it with no trailers. A client reports INTERNAL for that, so a status
+// read from those headers would hide a broken candidate.
+func TestAStatusOutsideTrailersOnlyIsMissing(t *testing.T) {
+	_, _, _, cfg := grpcCluster(t)
+	var lc net.ListenConfig
+	listener, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	broken := &http.Server{Protocols: protocols, ReadHeaderTimeout: 5 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/grpc")
+		w.Header().Set("Grpc-Status", "5")
+		w.WriteHeader(http.StatusOK)
+		_ = http.NewResponseController(w).Flush()
+	})}
+	go func() { _ = broken.Serve(listener) }()
+	t.Cleanup(func() { _ = broken.Close() })
+	candidate := "http://" + listener.Addr().String()
+	cfg.Candidate = TargetConfig{URL: candidate}
+	cfg.AllowedOrigins = append(cfg.AllowedOrigins, candidate)
+
+	_, results := mustRun(t, mustEngine(t, cfg), scan(t, writeDataset(t, []spec{
+		grpcSpec(t, cfg.Descriptors, rpcGetOrder, `{"id":"ord-missing"}`),
+	})))
+	calls := results[0].Calls
+	if calls[RoleBaselineA].GRPCStatus == nil || *calls[RoleBaselineA].GRPCStatus != 5 {
+		t.Fatalf("a real Trailers-Only status must still be read: %+v", calls[RoleBaselineA])
+	}
+	if calls[RoleCandidate].GRPCStatus != nil {
+		t.Fatalf("candidate status = %d, want none", *calls[RoleCandidate].GRPCStatus)
+	}
+}
