@@ -464,7 +464,7 @@ func typeName(v any) string {
 		return "opaque"
 	case anyValue:
 		// The packed type is the value's type, so a change of type is a type change.
-		return "any:" + x.TypeURL
+		return "any:" + boundedTypeURL(x.TypeURL)
 	default:
 		return "unknown"
 	}

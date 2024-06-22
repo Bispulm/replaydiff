@@ -461,3 +461,26 @@ func TestNestedAnyIsComparedOnlyAsDeepAsRedactionGoes(t *testing.T) {
 		t.Fatalf("tree = %s", data)
 	}
 }
+
+func orderWithForeignAny(typeURL string) grpcReply {
+	anyMessage := protowire.AppendTag(nil, 1, protowire.BytesType)
+	anyMessage = protowire.AppendString(anyMessage, typeURL)
+	anyMessage = protowire.AppendTag(anyMessage, 2, protowire.BytesType)
+	anyMessage = protowire.AppendBytes(anyMessage, []byte{8, 1})
+	return grpcReply{message: protowire.AppendBytes(protowire.AppendTag(nil, 17, protowire.BytesType), anyMessage)}
+}
+
+// An Any's type URL is the sender's text and acts as a type name, which evidence limits
+// didn't cover. A long one is cut, and a digest still tells two of them apart.
+func TestLongAnyTypeURLsAreBounded(t *testing.T) {
+	long := "example.test/acct.Secret?k=" + strings.Repeat("S", 600)
+	result := compareGRPC(t, orderWithForeignAny(long+"a"), orderWithForeignAny(long+"a"), orderWithForeignAny(long+"b"))
+	wantKinds(t, result, "breaking:type_changed:$.extension")
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), strings.Repeat("S", 200)) {
+		t.Fatalf("the type URL reached the result in full: %d bytes", len(data))
+	}
+}

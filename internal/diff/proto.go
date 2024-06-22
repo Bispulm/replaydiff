@@ -289,6 +289,24 @@ func (r *recordCompare) compareProtoMaps(path, concrete string, depth int, a, b,
 	}
 }
 
+// maxTypeURLBytes bounds an Any's type URL where it appears as a type name. It is the
+// sender's text, and type names aren't cut to max_evidence_bytes.
+const maxTypeURLBytes = 128
+
+// boundedTypeURL cuts a long type URL and adds a digest of all of it, so two long URLs
+// sharing a prefix are still different types.
+func boundedTypeURL(url string) string {
+	if len(url) <= maxTypeURLBytes {
+		return url
+	}
+	limit := maxTypeURLBytes
+	for limit > 0 && url[limit]&0xC0 == 0x80 {
+		limit--
+	}
+	sum := sha256.Sum256([]byte(url))
+	return url[:limit] + "...#" + hex.EncodeToString(sum[:4])
+}
+
 func boundedKey(key string) string {
 	if len(key) <= maxKeyBytes {
 		return key
