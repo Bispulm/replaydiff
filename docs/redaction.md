@@ -118,7 +118,7 @@ reason, a rule can't name the key or value of a map's entries, such as
 Messages are decoded and encoded again, deterministically. A message is never stored as it
 arrived:
 
-| Condition | Reason | Replayable if it's the request |
+| Condition | Reason | Replayable |
 |---|---|---|
 | No descriptor set, or a method it doesn't have | `proto_descriptor_missing`, `proto_method_unknown` | No |
 | More than one message, or a streaming method | `grpc_streaming` | No |
@@ -129,8 +129,10 @@ arrived:
 | `Any` messages packed more than 8 deep | `proto_any_too_deep` | No |
 
 Unknown fields and foreign `Any` values are bytes that no rule can see into, so the whole
-message is omitted rather than stored with them. An omitted response keeps its request
-replayable, as for other bodies.
+message is omitted rather than stored with them. As for other bodies, this applies to the
+response too: the record isn't replayable, and the report counts it under
+`response_body_` and the reason. A server newer than the descriptor set does this for every
+message with a field the set lacks, so update the set when the schema changes.
 
 gRPC metadata goes through the header rules. `grpc-message`, which servers fill with whatever
 went wrong, and binary metadata such as `grpc-status-details-bin` are always replaced, because
