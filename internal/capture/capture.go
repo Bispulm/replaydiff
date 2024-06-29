@@ -19,6 +19,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -48,6 +49,9 @@ const (
 	DropSanitizeFailure     DropReason = "sanitize_failure"
 	DropUnsupportedProtocol DropReason = "unsupported_protocol"
 )
+
+// DropReasons lists every reason a recording can be dropped.
+func DropReasons() []DropReason { return slices.Clone(allDropReasons) }
 
 var allDropReasons = []DropReason{
 	DropQueueFull, DropShuttingDown, DropShutdownDeadline, DropDeadlineExceeded,
@@ -132,6 +136,9 @@ type Config struct {
 	FS traffic.FS
 	// Logger receives operational logs, which never hold traffic content.
 	Logger *slog.Logger
+	// OnExchange, if set, is called on the request path when each exchange finishes,
+	// with its protocol and how long it took. It must be fast.
+	OnExchange func(protocol traffic.Protocol, took time.Duration)
 }
 
 // Stats is a snapshot of capture's counters.
@@ -155,6 +162,8 @@ type Capture struct {
 	budget   memoryBudget
 	encoder  *traffic.Encoder
 	writer   *traffic.Writer
+
+	onExchange func(traffic.Protocol, time.Duration)
 
 	// sanitize is a field so a test can make it fail.
 	sanitize func(*exchange) *traffic.Record
@@ -216,19 +225,20 @@ func New(cfg Config) (*Capture, error) {
 		logger = slog.Default()
 	}
 	c := &Capture{
-		upstream: cfg.Upstream,
-		engine:   cfg.Engine,
-		limits:   limits,
-		logger:   logger,
-		encoder:  encoder,
-		writer:   writer,
-		drops:    make(map[DropReason]*atomic.Int64, len(allDropReasons)),
-		warned:   make(map[DropReason]*atomic.Bool, len(allDropReasons)),
-		omitted:  make(map[string]int64),
-		queue:    make(chan *exchange, limits.QueueCapacity),
-		frames:   make(chan traffic.Frame, limits.Workers),
-		abort:    make(chan struct{}),
-		done:     make(chan struct{}),
+		upstream:   cfg.Upstream,
+		engine:     cfg.Engine,
+		limits:     limits,
+		logger:     logger,
+		onExchange: cfg.OnExchange,
+		encoder:    encoder,
+		writer:     writer,
+		drops:      make(map[DropReason]*atomic.Int64, len(allDropReasons)),
+		warned:     make(map[DropReason]*atomic.Bool, len(allDropReasons)),
+		omitted:    make(map[string]int64),
+		queue:      make(chan *exchange, limits.QueueCapacity),
+		frames:     make(chan traffic.Frame, limits.Workers),
+		abort:      make(chan struct{}),
+		done:       make(chan struct{}),
 	}
 	c.budget.limit = limits.MemoryBudgetBytes
 	c.sanitize = c.sanitizeExchange
@@ -438,6 +448,13 @@ func (c *Capture) onProxyError(w http.ResponseWriter, r *http.Request, _ error) 
 func (c *Capture) finish(ex *exchange, r *http.Request, aborted bool) {
 	ex.total = time.Since(ex.start)
 	ex.finished = time.Now()
+	if c.onExchange != nil {
+		protocol := protocolOf(ex)
+		if grpcwire.ContentKind(ex.reqHeader.Get("Content-Type")) != grpcwire.KindNone {
+			protocol = traffic.ProtocolGRPC
+		}
+		c.onExchange(protocol, ex.total)
+	}
 	if ex.reqTap == nil {
 		ex.reqBody.eof = true
 	} else {
