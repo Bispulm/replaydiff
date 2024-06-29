@@ -155,8 +155,12 @@ func TestGRPCRegressionsAreDetected(t *testing.T) {
 	assertAbsent(t, "inspect output", inspect.stdout, secret)
 
 	reportPath := filepath.Join(s.work, "report.json")
+	// The error rate needs 20 GetOrder calls, which is also enough to judge latency, and the
+	// fixture seeds no gRPC latency regression. On a busy machine, one slow candidate call
+	// out of 20 would be reported, so latency is left out of this test.
+	diffConfig := writeFile(t, filepath.Join(s.work, "diff.yaml"), "latency:\n  min_samples: 1000\n")
 	run := runCommand(t, nil, "replaydiff", s.runArgs(reportPath, "--target-h2c", "--descriptor-set", descriptorSetPath,
-		"--allow-rpc", orderService+"GetOrder", "--allow-rpc", orderService+"GetCatalog")...)
+		"--diff-config", diffConfig, "--allow-rpc", orderService+"GetOrder", "--allow-rpc", orderService+"GetCatalog")...)
 	data, err := os.ReadFile(reportPath)
 	if err != nil {
 		t.Fatalf("no report (exit %d): %s", run.code, run.stderr)
