@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -398,4 +399,16 @@ func hasControlExceptTab(s string) bool {
 		}
 	}
 	return false
+}
+
+// StandardMethod returns method if it's one of HTTP's standard methods, and "_OTHER"
+// otherwise. A method is any token a client chooses, so telemetry uses this to keep its
+// values bounded.
+func StandardMethod(method string) string {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch,
+		http.MethodDelete, http.MethodConnect, http.MethodOptions, http.MethodTrace:
+		return method
+	}
+	return "_OTHER"
 }
