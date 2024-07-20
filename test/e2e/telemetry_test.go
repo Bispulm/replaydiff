@@ -1,10 +1,14 @@
 package e2e
 
 import (
+	"bytes"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -84,4 +88,64 @@ func TestCaptureServesMetricsAndHealthOnItsOwnListener(t *testing.T) {
 	if n := scanDir(t, work+"/traffic"); n == 0 {
 		t.Fatal("no traffic written")
 	}
+}
+
+// otlpCollector is a stand-in OTLP/HTTP endpoint that keeps every export it receives.
+type otlpCollector struct {
+	*httptest.Server
+	mu       sync.Mutex
+	payloads [][]byte
+}
+
+func newCollector(t *testing.T) *otlpCollector {
+	t.Helper()
+	c := &otlpCollector{}
+	c.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		if r.URL.Path == "/v1/traces" {
+			c.mu.Lock()
+			c.payloads = append(c.payloads, data)
+			c.mu.Unlock()
+		}
+	}))
+	t.Cleanup(c.Close)
+	return c
+}
+
+func (c *otlpCollector) received() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return bytes.Join(c.payloads, nil)
+}
+
+// Spans from capture and run reach the collector, and none holds traffic content, which
+// is planted in the path, query, a header and the body.
+func TestTracesAreExportedWithoutTrafficContent(t *testing.T) {
+	secret := newSentinel(t)
+	collector := newCollector(t)
+	env := []string{"OTEL_EXPORTER_OTLP_ENDPOINT=" + collector.URL}
+	s := deploySlice(t)
+	proxy := start(t, env, "replaydiff", "capture", "--listen", "127.0.0.1:0",
+		"--upstream", s.captureSvc.baseURL(t), "--out", s.trafficDir, "--redact", s.policy)
+	url := proxy.baseURL(t)
+	for range 3 {
+		httpGet(t, url+"/v1/orders/"+secret+"?token="+secret, map[string]string{"X-Note": secret})
+	}
+	if err := proxy.stop(t); err != nil {
+		t.Fatalf("capture exit: %v\n%s", err, proxy.output())
+	}
+	captured := collector.received()
+	if !bytes.Contains(captured, []byte("replaydiff capture")) {
+		t.Fatalf("no capture spans exported (%d bytes)", len(captured))
+	}
+
+	run := runCommand(t, env, "replaydiff", s.runArgs(filepath.Join(s.work, "report.json"))...)
+	if run.code != 0 {
+		t.Fatalf("run exit %d: %s", run.code, run.stderr)
+	}
+	all := collector.received()
+	if !bytes.Contains(all, []byte("replaydiff replay call")) {
+		t.Fatalf("no replay spans exported")
+	}
+	assertAbsent(t, "exported spans", all, secret)
 }

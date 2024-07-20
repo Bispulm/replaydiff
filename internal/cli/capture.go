@@ -116,6 +116,11 @@ func runCapture(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	limits.MaxRequestBodyBytes = int64(maxRequest)
 	limits.MaxResponseBodyBytes = int64(maxResponse)
 	limits.MemoryBudgetBytes = int64(memoryBudget)
+	tracing, err := telemetry.SetupTracing(ctx, "replaydiff-capture")
+	if err != nil {
+		return fail(stderr, "capture", err)
+	}
+	defer flushTraces(tracing, logger)
 	var recorder *capture.Capture
 	metrics := telemetry.NewCaptureMetrics(telemetry.CaptureMetricsConfig{
 		// Scrapes start only once the recorder exists.
@@ -132,6 +137,7 @@ func runCapture(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		Limits:      limits,
 		Logger:      logger,
 		OnExchange:  metrics.ObserveExchange,
+		Tracer:      tracing.Tracer(),
 	})
 	if err != nil {
 		return fail(stderr, "capture", err)
