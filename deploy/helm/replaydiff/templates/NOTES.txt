@@ -1,0 +1,11 @@
+Traffic sent to the {{ include "replaydiff.fullname" . }} Service on port {{ .Values.service.port }} goes through capture to the service in each pod.
+
+Recordings are written under /var/lib/replaydiff/<pod name> in the "traffic" volume.
+{{- if not .Values.storage.persistentVolumeClaim.enabled }}
+They are in an emptyDir, which is deleted with the pod. Enable storage.persistentVolumeClaim to keep them.
+{{- end }}
+
+Metrics, liveness and readiness are on port {{ .Values.capture.adminPort }}: /metrics, /livez, /readyz.
+
+Review what was stored before sharing it:
+  replaydiff inspect --traffic <copied traffic directory>

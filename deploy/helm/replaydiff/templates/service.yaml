@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "replaydiff.fullname" . }}
+  labels:
+    {{- include "replaydiff.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "replaydiff.selectorLabels" . | nindent 4 }}
+  ports:
+    # Traffic goes to capture, which forwards it to the service in the same pod.
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: capture
+      {{- if .Values.capture.h2c }}
+      appProtocol: kubernetes.io/h2c
+      {{- end }}
+    - name: admin
+      port: {{ .Values.capture.adminPort }}
+      targetPort: admin

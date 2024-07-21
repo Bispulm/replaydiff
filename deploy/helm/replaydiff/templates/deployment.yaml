@@ -1,0 +1,186 @@
+{{- $app := .Values.app -}}
+{{- $capture := .Values.capture -}}
+{{- if or (eq (int $app.port) (int $capture.port)) (eq (int $app.port) (int $capture.adminPort)) (eq (int $capture.port) (int $capture.adminPort)) }}
+{{- fail "app.port, capture.port and capture.adminPort must all differ" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "replaydiff.fullname" . }}
+  labels:
+    {{- include "replaydiff.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "replaydiff.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "replaydiff.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # A changed policy rolls the pods, so recordings follow the new rules.
+        checksum/policy: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: app
+          image: "{{ $app.image.repository }}:{{ $app.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ $app.image.pullPolicy }}
+          {{- with $app.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $app.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $app.env }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: app
+              containerPort: {{ $app.port }}
+          {{- with $app.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $app.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ .Values.preStopSleepSeconds }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- with $app.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        - name: capture
+          image: "{{ $capture.image.repository }}:{{ $capture.image.tag }}"
+          imagePullPolicy: {{ $capture.image.pullPolicy }}
+          args:
+            - capture
+            - --listen=0.0.0.0:{{ $capture.port }}
+            - --admin-listen=0.0.0.0:{{ $capture.adminPort }}
+            - --upstream=http://127.0.0.1:{{ $app.port }}
+            - --out=/var/lib/replaydiff/$(POD_NAME)
+            - --redact=/etc/replaydiff/redact.yaml
+            - --max-request-body={{ $capture.maxRequestBody }}
+            - --max-response-body={{ $capture.maxResponseBody }}
+            - --memory-budget={{ $capture.memoryBudget }}
+            - --queue={{ $capture.queue }}
+            - --shutdown-timeout={{ $capture.shutdownTimeout }}
+            - --log-level={{ $capture.logLevel }}
+            {{- if $capture.h2c }}
+            - --h2c
+            {{- end }}
+            {{- if $capture.upstreamH2C }}
+            - --upstream-h2c
+            {{- end }}
+            {{- if $capture.descriptorSet.configMap }}
+            - --descriptor-set=/etc/replaydiff/descriptors/{{ $capture.descriptorSet.key }}
+            {{- end }}
+            {{- if $capture.sessionSecret.secretName }}
+            - --session-secret-env=REPLAYDIFF_SESSION_SECRET
+            {{- end }}
+            {{- range $capture.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            {{- if $capture.sessionSecret.secretName }}
+            - name: REPLAYDIFF_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $capture.sessionSecret.secretName }}
+                  key: {{ $capture.sessionSecret.key }}
+            {{- end }}
+            {{- if $capture.otlpEndpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ $capture.otlpEndpoint | quote }}
+            {{- end }}
+            {{- with $capture.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: capture
+              containerPort: {{ $capture.port }}
+            - name: admin
+              containerPort: {{ $capture.adminPort }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: admin
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: admin
+            periodSeconds: 10
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ .Values.preStopSleepSeconds }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- with $capture.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: policy
+              mountPath: /etc/replaydiff
+              readOnly: true
+            {{- if $capture.descriptorSet.configMap }}
+            - name: descriptors
+              mountPath: /etc/replaydiff/descriptors
+              readOnly: true
+            {{- end }}
+            - name: traffic
+              mountPath: /var/lib/replaydiff
+      volumes:
+        - name: policy
+          configMap:
+            name: {{ include "replaydiff.fullname" . }}-policy
+        {{- if $capture.descriptorSet.configMap }}
+        - name: descriptors
+          configMap:
+            name: {{ $capture.descriptorSet.configMap }}
+        {{- end }}
+        - name: traffic
+          {{- if .Values.storage.persistentVolumeClaim.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "replaydiff.claimName" . }}
+          {{- else }}
+          emptyDir:
+            sizeLimit: {{ .Values.storage.emptyDir.sizeLimit }}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

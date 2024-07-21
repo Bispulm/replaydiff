@@ -1,0 +1,104 @@
+# The service whose traffic is captured. It runs in the same pod as capture, which
+# forwards to it on localhost.
+app:
+  image:
+    repository: ""
+    tag: ""
+    pullPolicy: IfNotPresent
+  command: []
+  args: []
+  # The port the service listens on inside the pod.
+  port: 8080
+  env: []
+  resources: {}
+  readinessProbe: {}
+  livenessProbe: {}
+
+capture:
+  image:
+    repository: replaydiff
+    tag: dev
+    pullPolicy: IfNotPresent
+  # The port the Service sends traffic to. Capture forwards it to app.port.
+  port: 18200
+  # /metrics, /livez and /readyz, apart from the traffic port.
+  adminPort: 18209
+  # Accept HTTP/2 without TLS from clients, as gRPC clients inside a cluster often use.
+  h2c: false
+  # Speak HTTP/2 without TLS to the service, which gRPC services need.
+  upstreamH2C: false
+  # The redaction policy. Bodies are stored according to it. See docs/redaction.md.
+  redactPolicy: |
+    query_params: [token]
+  # A compiled descriptor set for gRPC, from an existing ConfigMap. Without one, gRPC
+  # calls are forwarded but not recorded as replayable.
+  descriptorSet:
+    configMap: ""
+    key: descriptors.binpb
+  # A Secret holding the session digest key, so sessions correlate across replicas.
+  sessionSecret:
+    secretName: ""
+    key: session-secret
+  maxRequestBody: 1MiB
+  maxResponseBody: 1MiB
+  memoryBudget: 256MiB
+  queue: 1024
+  shutdownTimeout: 10s
+  logLevel: info
+  # Sets OTEL_EXPORTER_OTLP_ENDPOINT. Empty leaves tracing off.
+  otlpEndpoint: ""
+  extraArgs: []
+  extraEnv: []
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 512Mi
+
+# Where recordings are written. Each pod writes to a directory named after itself.
+storage:
+  persistentVolumeClaim:
+    enabled: false
+    existingClaim: ""
+    storageClassName: ""
+    accessModes: [ReadWriteOnce]
+    size: 1Gi
+  emptyDir:
+    sizeLimit: 2Gi
+
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 80
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}
+
+# Long enough for the preStop pause and both of capture's shutdown phases.
+terminationGracePeriodSeconds: 35
+# A pause before shutdown, so endpoints are removed before connections close.
+preStopSleepSeconds: 5
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
