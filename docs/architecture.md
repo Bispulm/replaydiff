@@ -21,7 +21,7 @@ flowchart LR
     G --> OUT[Exit code, JUnit, Markdown, JSON]
 ```
 
-Deployment is planned. The README's status table shows what exists today.
+It runs as a local process or as a sidecar from the Helm chart. See [deployment](deployment.md).
 
 ## Capture
 
@@ -69,6 +69,8 @@ when the write returns.
 - [Redaction](redaction.md)
 - [Replay](replay.md)
 - [Protocols](protocols.md)
+- [Deployment](deployment.md)
+- [Observability](observability.md)
 - [Comparison](diffing.md)
 - [CI gate](ci.md)
 - [Fixtures](fixtures.md)
