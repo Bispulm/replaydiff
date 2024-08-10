@@ -604,7 +604,10 @@ func (c *Capture) traceExchange(ex *exchange, result string) {
 	if c.tracer == nil {
 		return
 	}
-	parent := propagation.TraceContext{}.Extract(context.Background(), propagation.HeaderCarrier(ex.reqHeader))
+	// Only traceparent: tracestate is vendor data of the client's choosing, which would
+	// otherwise be carried into the span and exported.
+	carrier := propagation.MapCarrier{"traceparent": ex.reqHeader.Get("Traceparent")}
+	parent := propagation.TraceContext{}.Extract(context.Background(), carrier)
 	_, span := c.tracer.Start(parent, "replaydiff capture",
 		trace.WithSpanKind(trace.SpanKindServer),
 		trace.WithTimestamp(ex.start),
