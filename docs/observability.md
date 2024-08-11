@@ -82,7 +82,9 @@ after that point are counted in metrics. A recording dropped because the queue w
 no span.
 
 **Trace context.** Capture's span joins the client's trace when the request carries a
-`traceparent`, but capture never changes what it forwards, that header included. Replay
+`traceparent`, but capture never changes what it forwards, that header included. It reads
+nothing else: a client's `tracestate` is vendor data of its choosing, so it isn't carried
+into capture's span. Replay
 doesn't send recorded `traceparent`, `tracestate` or `baggage`, since they belong to the
 production call. With tracing on, each replayed call carries its own context, so a target's
 spans appear under the call that caused them.
