@@ -44,3 +44,8 @@ image:
 .PHONY: kind-test
 kind-test:
 	REPLAYDIFF_KIND=1 REPLAYDIFF_KIND_KEEP=$(KEEP) go test -count=1 -timeout 30m -v ./test/kind/
+
+# Go benchmarks of proxying, redaction, encoding and comparison, with allocations.
+.PHONY: bench
+bench:
+	go test -run '^$$' -bench . -benchmem -count 5 ./internal/...
