@@ -262,7 +262,7 @@ func TestOversizedBodiesAreForwardedInFullButNotStored(t *testing.T) {
 	}))
 	got := h.send(http.MethodPost, "/", large, map[string]string{"Content-Type": "application/json"})
 	if seen != len(large) || len(got.body) != len(large) {
-		t.Fatalf("upstream saw %d bytes, client saw %d, want %d", seen, len(got.body), len(large))
+		t.Fatalf("upstream saw %d bytes, client saw %d (read error: %v), want %d\nlogs:\n%s", seen, len(got.body), got.readErr, len(large), h.logs.String())
 	}
 	rec := h.onlyRecord()
 	if rec.Request.Body.State != traffic.BodyOmitted || rec.Request.Body.Reason != ReasonBodyTooLarge {
