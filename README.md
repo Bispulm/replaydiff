@@ -5,7 +5,9 @@ replays it against two baselines and a candidate, and fails your CI build if the
 regressed. Using two baselines separates real changes from noise such as timestamps and
 generated IDs.
 
-**Status: early development, not ready for production use.**
+**Status: a first release candidate, tested against synthetic traffic. It hasn't been used in
+production.** "Tested" below means automated tests exercise it. "Measured" means a number was
+taken on stated hardware, against a target set beforehand.
 
 | Area | State |
 |---|---|
@@ -18,7 +20,9 @@ generated IDs.
 | Protobuf redaction and comparison, from a descriptor set | Implemented and tested |
 | CI gate with a policy, JSON, JUnit and Markdown reports | Implemented and tested, including in this repository's CI |
 | Helm sidecar chart, Prometheus metrics, OpenTelemetry traces, Grafana dashboard | Implemented and tested, including on kind |
-| Overhead and throughput benchmarks | Planned. No performance numbers are claimed yet. |
+| Compose stack with Prometheus and Grafana | Implemented, run by hand |
+| Latency capture adds, drops, recording and replay rates, memory, fairness | Measured on one machine. See [benchmarks](docs/benchmarks.md). |
+| Release archives, checksums and a multi-platform image | Configured and built locally. Nothing has been published. |
 
 ## Try it
 
@@ -56,6 +60,17 @@ replaydiff run --traffic ./traffic --report report.json --redact examples/redact
 replaydiff report report.json --markdown summary.md --junit junit.xml
 ```
 
+## Running it in Kubernetes or Compose
+
+```bash
+helm install orders deploy/helm/replaydiff --set app.image.repository=registry.example/orders \
+  --set-file capture.redactPolicy=redact.yaml
+make compose-up    # a local stack with Prometheus and Grafana on 127.0.0.1:18200-18209
+```
+
+See [deployment](docs/deployment.md) for the chart's values, shutdown, storage and replaying from
+a Job, and [observability](docs/observability.md) for metrics, traces and the dashboard.
+
 ## Using it in CI
 
 | Exit code | Verdict | Meaning |
@@ -70,7 +85,8 @@ policy, waivers and a GitHub Actions example.
 ## Guarantees and their limits
 
 - **Live traffic doesn't wait for storage.** Recording failures drop recordings and count
-  them by reason. The proxy does add some processing overhead, which hasn't been measured.
+  them by reason. The proxy does add latency, which is [measured](docs/benchmarks.md) on one
+  machine. Measure it on yours before relying on it.
 - **Covered values aren't persisted.** Tests plant unique values in every covered location
   and scan segments, logs and reports. **Redaction is rule-based and doesn't find unknown
   secrets.** Read [what it covers and what it can't](docs/redaction.md).
@@ -95,6 +111,7 @@ policy, waivers and a GitHub Actions example.
 - [Protocols](docs/protocols.md)
 - [Deployment](docs/deployment.md)
 - [Observability](docs/observability.md)
+- [Benchmarks](docs/benchmarks.md)
 - [Comparison](docs/diffing.md)
 - [CI gate](docs/ci.md)
 - [Fixtures](docs/fixtures.md)
@@ -104,9 +121,13 @@ policy, waivers and a GitHub Actions example.
 ## Development
 
 ```bash
-make build   # builds into ./bin
+make build          # builds into ./bin
 make test
-make check   # lint, race tests, vulnerability and secret scans
+make check          # lint, race tests, vulnerability and secret scans
+make bench          # Go benchmarks with allocations
+make bench-harness  # the measurements in docs/benchmarks.md, about ten minutes
+make kind-test      # capture and replay through the Helm chart on kind
+make snapshot       # release archives and checksums in ./dist, published nowhere
 ```
 
 ## License
