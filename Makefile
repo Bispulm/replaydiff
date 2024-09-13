@@ -56,6 +56,11 @@ bench:
 bench-harness: build
 	bin/replaydiff-bench --capture bin/replaydiff --out .bench
 
+# Builds release archives and checksums into dist/ without publishing anything.
+.PHONY: snapshot
+snapshot:
+	goreleaser release --snapshot --clean
+
 # The local stack in compose.yaml. See docs/deployment.md#compose.
 .PHONY: compose-up compose-down
 compose-up:
