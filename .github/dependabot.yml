@@ -1,0 +1,11 @@
+# Keeps the pinned actions and Go modules current, one pull request a week each.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
