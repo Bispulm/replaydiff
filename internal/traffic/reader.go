@@ -136,6 +136,10 @@ type Dataset struct {
 	Entries []Entry
 	// Integrity reports what couldn't be read.
 	Integrity Integrity
+	// CaptureDrops counts exchanges that capture never recorded, by reason,
+	// summed across runs. These records are absent, not damaged, so this doesn't
+	// affect Integrity, but a report must still show the gap in coverage.
+	CaptureDrops map[string]int64
 
 	root     *os.Root
 	dec      *zstd.Decoder
@@ -528,6 +532,12 @@ func (s *scanner) walkFrames(file io.ReaderAt, size int64, info segmentInfo, seg
 	}
 	if footerRead.Final {
 		run.final = true
+	}
+	for reason, n := range footerRead.Drops {
+		if s.ds.CaptureDrops == nil {
+			s.ds.CaptureDrops = make(map[string]int64)
+		}
+		s.ds.CaptureDrops[reason] += n
 	}
 	return nil
 }

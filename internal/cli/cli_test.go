@@ -61,7 +61,7 @@ func TestVersionPrintsBuildVersion(t *testing.T) {
 // Commands that have no implementation yet must not exit 0: a CI job wired to
 // them would otherwise go green without having checked anything.
 func TestUnimplementedCommandsFailClosed(t *testing.T) {
-	for _, cmd := range []string{"capture", "run", "report"} {
+	for _, cmd := range []string{"run", "report"} {
 		code, _, stderr := run(t, cmd)
 		if code != ExitFailure {
 			t.Errorf("%s: exit code = %d, want %d", cmd, code, ExitFailure)

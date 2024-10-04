@@ -564,6 +564,49 @@ func TestLoadDetectsFileChangedAfterScan(t *testing.T) {
 	}
 }
 
+func TestCaptureDropsAreReadBackFromTheFinalFooter(t *testing.T) {
+	dir := t.TempDir()
+	enc := newTestEncoder(t)
+	w, err := NewWriter(dir, WriterOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(mustFrame(t, enc, recordWithSeq(1))); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.CloseWithDrops(map[string]int64{"queue_full": 7, "disk_full": 2}); err != nil {
+		t.Fatal(err)
+	}
+	ds := mustScan(t, dir)
+	if !ds.Integrity.Complete() {
+		t.Fatalf("problems: %v", ds.Integrity.Problems())
+	}
+	if want := map[string]int64{"queue_full": 7, "disk_full": 2}; !reflect.DeepEqual(ds.CaptureDrops, want) {
+		t.Fatalf("CaptureDrops = %v, want %v", ds.CaptureDrops, want)
+	}
+}
+
+func TestCaptureDropsAddUpAcrossRuns(t *testing.T) {
+	dir := t.TempDir()
+	enc := newTestEncoder(t)
+	for range 2 {
+		w, err := NewWriter(dir, WriterOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Append(mustFrame(t, enc, recordWithSeq(1))); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.CloseWithDrops(map[string]int64{"queue_full": 3}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ds := mustScan(t, dir)
+	if ds.CaptureDrops["queue_full"] != 6 {
+		t.Fatalf("CaptureDrops = %v", ds.CaptureDrops)
+	}
+}
+
 func TestIntegrityProblemsDoNotQuoteContent(t *testing.T) {
 	var i Integrity
 	i.CorruptRecords = 2

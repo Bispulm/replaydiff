@@ -35,6 +35,7 @@ Commands:
   capture   Proxy traffic and store redacted recordings
   run       Replay recordings against baseline A, baseline B and a candidate
   report    Render results and apply the CI policy
+  inspect   Print stored records for review
   version   Print the build version
   help      Print this message
 
@@ -45,7 +46,7 @@ Exit codes:
 `
 
 // Run executes the command named by args and returns the process exit code.
-func Run(_ context.Context, args []string, stdout, stderr io.Writer) int {
+func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usage)
 		return ExitFailure
@@ -57,7 +58,11 @@ func Run(_ context.Context, args []string, stdout, stderr io.Writer) int {
 	case "version":
 		fmt.Fprintf(stdout, "replaydiff %s\n", buildVersion())
 		return ExitOK
-	case "capture", "run", "report":
+	case "capture":
+		return runCapture(ctx, args[1:], stdout, stderr)
+	case "inspect":
+		return runInspect(args[1:], stdout, stderr)
+	case "run", "report":
 		fmt.Fprintf(stderr, "replaydiff %s: not implemented\n", args[0])
 		return ExitFailure
 	default:
