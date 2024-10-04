@@ -79,8 +79,8 @@ func runInspect(args []string, stdout, stderr io.Writer) int {
 	}
 
 	fmt.Fprintf(stderr, "%d record(s) in %d segment(s)\n", dataset.Integrity.Records, dataset.Integrity.Segments)
-	for reason, n := range dataset.CaptureDrops {
-		fmt.Fprintf(stderr, "capture dropped %d exchange(s): %s\n", n, reason)
+	for _, reason := range sortedKeys(dataset.CaptureDrops) {
+		fmt.Fprintf(stderr, "capture dropped %d exchange(s): %s\n", dataset.CaptureDrops[reason], reason)
 	}
 	if problems := dataset.Integrity.Problems(); len(problems) > 0 {
 		for _, problem := range problems {

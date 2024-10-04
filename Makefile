@@ -19,3 +19,7 @@ secrets:
 	gitleaks git --no-banner --redact .
 
 check: lint race vuln secrets
+
+.PHONY: demo
+demo:
+	./scripts/demo.sh

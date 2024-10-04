@@ -528,10 +528,21 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 	engine := h.capture.engine
 	target := h.capture.upstream
 	dir := t.TempDir()
+	withLimit := func(l Limits) Config { return Config{Upstream: target, Dir: dir, Engine: engine, Limits: l} }
 	for name, cfg := range map[string]Config{
-		"no upstream": {Dir: dir, Engine: engine},
-		"no dir":      {Upstream: target, Engine: engine},
-		"no engine":   {Upstream: target, Dir: dir},
+		"no upstream":                  {Dir: dir, Engine: engine},
+		"no dir":                       {Upstream: target, Engine: engine},
+		"no engine":                    {Upstream: target, Dir: dir},
+		"negative queue":               withLimit(Limits{QueueCapacity: -1}),
+		"negative workers":             withLimit(Limits{Workers: -1}),
+		"negative request body":        withLimit(Limits{MaxRequestBodyBytes: -1}),
+		"negative response body":       withLimit(Limits{MaxResponseBodyBytes: -1}),
+		"negative memory budget":       withLimit(Limits{MemoryBudgetBytes: -1}),
+		"negative processing deadline": withLimit(Limits{ProcessingDeadline: -1}),
+		"negative retry interval":      withLimit(Limits{StorageRetryInterval: -1}),
+		"negative sync interval":       withLimit(Limits{SyncInterval: -1}),
+		"negative segment size":        withLimit(Limits{MaxSegmentBytes: -1}),
+		"negative record size":         withLimit(Limits{MaxRecordBytes: -1}),
 	} {
 		if _, err := New(cfg); err == nil {
 			t.Errorf("%s: want error", name)

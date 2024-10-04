@@ -350,16 +350,28 @@ func (e *Engine) param(location Location, pair string, hits *Hits) string {
 	rawName, rawValue, hasValue := strings.Cut(pair, "=")
 	name, nameErr := url.QueryUnescape(rawName)
 	value, valueErr := url.QueryUnescape(rawValue)
-	if nameErr != nil || valueErr != nil {
+
+	// The name itself is normally kept. These two cases are where it can hold a
+	// covered value, so it has to go as well.
+	if nameErr != nil {
 		hits.add(location, "malformed-parameter", 1)
-		return rawName + "=" + queryPlaceholder
+		return queryPlaceholder + "=" + queryPlaceholder
 	}
-	if rule, ok := e.queryParams[strings.ToLower(name)]; ok && hasValue {
-		hits.add(location, rule, 1)
+	if rule := e.nestedParameter(name); rule != "" {
+		hits.add(location, "nested:"+rule, 1)
+		return queryPlaceholder + "=" + queryPlaceholder
+	}
+
+	if valueErr != nil {
+		hits.add(location, "malformed-parameter", 1)
 		return rawName + "=" + queryPlaceholder
 	}
 	if !hasValue {
 		return pair
+	}
+	if rule, ok := e.queryParams[strings.ToLower(name)]; ok {
+		hits.add(location, rule, 1)
+		return rawName + "=" + queryPlaceholder
 	}
 	if rule := e.nestedParameter(name + "=" + value); rule != "" {
 		hits.add(location, "nested:"+rule, 1)
