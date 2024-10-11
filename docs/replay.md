@@ -8,7 +8,7 @@ Replay sends only to origins given on the command line, each of which must also
 be on the allowlist:
 
 ```bash
-replaydiff run --traffic ./traffic --report report.json \
+replaydiff run --traffic ./traffic --report report.json --redact redact.yaml \
   --baseline-a http://a.internal:8080 --baseline-b http://b.internal:8080 \
   --candidate http://c.internal:8080 \
   --allow-origin http://a.internal:8080 \
@@ -111,13 +111,19 @@ replaydiff run ... --target-credential baseline-a:Authorization=BASELINE_TOKEN
 Values are never written to the report, which names only the headers each target was
 given. Nothing is ever recovered from a recording.
 
+## Sanitizing responses
+
+`--redact` is required, and should usually be the policy used at capture. Responses are
+sanitized with it before they're compared, because values from them can appear in the report as
+[evidence](diffing.md#evidence-and-limits).
+
 ## Exit codes
 
 | Code | `run` | `report` |
 |---|---|---|
-| 0 | The replay finished with complete evidence. This says nothing about regressions. | Not used yet |
+| 0 | The replay finished with complete evidence, whatever the findings were | Not used yet |
 | 1 | Not used yet | Not used yet |
-| 2 | Invalid configuration, execution failure, or incomplete evidence | Always, until responses are compared |
+| 2 | Invalid configuration, execution failure, or incomplete evidence | Always, until a CI policy exists |
 
 Evidence is incomplete when any of these is true:
 
@@ -134,7 +140,8 @@ and whether they fail the gate will be part of the CI policy.
 ## Current limits
 
 - gRPC is planned. HTTP/1.1 and HTTP/2 are described in [protocols](protocols.md).
-- Responses aren't compared yet, so the report's verdict is always `not_evaluated`.
+- No CI policy judges the [findings](diffing.md) yet, so the report's verdict is always
+  `not_evaluated`.
 - Request trailers in a recording aren't sent.
 - The report's samples include request paths, which redaction doesn't cover. See
   [redaction limits](redaction.md#known-limits).
