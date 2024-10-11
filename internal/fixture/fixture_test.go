@@ -308,3 +308,11 @@ func TestRedirectRoutePointsOffOrigin(t *testing.T) {
 		t.Fatalf("Location = %q", resp.Header.Get("Location"))
 	}
 }
+
+func TestProtocolRouteReportsWhatItSaw(t *testing.T) {
+	d := deploy(t)
+	_, body := getJSON(t, d.a.URL+"/v1/protocol")
+	if body["proto"] != "HTTP/1.1" {
+		t.Fatalf("body = %v", body)
+	}
+}

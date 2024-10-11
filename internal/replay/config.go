@@ -8,6 +8,7 @@ package replay
 
 import (
 	"cmp"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -64,6 +65,12 @@ type Config struct {
 	Timeout time.Duration
 	// MaxResponseBytes limits a held response body, after decompression.
 	MaxResponseBytes int64
+	// H2C makes every call use HTTP/2 without TLS, with no fallback to HTTP/1.1.
+	// It is for development, and requires http:// targets.
+	H2C bool
+	// TLS configures https:// targets, such as a private CA. HTTP/2 is negotiated
+	// through ALPN when a target offers it.
+	TLS *tls.Config
 }
 
 func (c Config) withDefaults() Config {

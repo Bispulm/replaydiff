@@ -88,14 +88,15 @@ One logical record makes three upstream calls, so `--rps 100` means about 300 ca
 per second in total. The report shows both `records_per_second` and
 `upstream_calls_per_second`.
 
-**There are no retries.** One record means exactly one call per target, because a
-retry would change the load and repeat side effects. A timeout is a recorded outcome,
-and unrelated records carry on.
+**replaydiff doesn't retry.** It makes one attempt per target for each record, because a
+retry would change the load and repeat side effects. A timeout is a recorded outcome, and
+unrelated records carry on.
 
-That includes retries the HTTP client would otherwise do by itself. Go's transport
-silently resends a safe request when a reused connection fails, so replay doesn't reuse
-connections. Each call opens a new one, and all three targets pay that cost equally.
-Its effect on latency and maximum replay rate hasn't been measured yet.
+The HTTP client can resend by itself in specific cases. Over HTTP/1.1 this is prevented by
+not reusing connections, so each call opens a new one, and all three targets pay that cost
+equally. Its effect on latency and maximum replay rate hasn't been measured yet. Over
+HTTP/2 it can't be prevented when a server says it didn't process a request, so those
+resends are counted and reported. See [protocols](protocols.md#resends).
 
 ## Credentials
 
@@ -132,7 +133,7 @@ and whether they fail the gate will be part of the CI policy.
 
 ## Current limits
 
-- HTTP/1.1 to plain HTTP or HTTPS targets. HTTP/2 and gRPC are planned.
+- gRPC is planned. HTTP/1.1 and HTTP/2 are described in [protocols](protocols.md).
 - Responses aren't compared yet, so the report's verdict is always `not_evaluated`.
 - Request trailers in a recording aren't sent.
 - The report's samples include request paths, which redaction doesn't cover. See
