@@ -1,9 +1,9 @@
 # replaydiff
 
 replaydiff captures service traffic through a reverse proxy, redacts it before storage,
-replays it against two baselines and a candidate, and reports what changed. Using two
-baselines separates real changes from noise such as timestamps and generated IDs. Acting
-as a CI gate is the next milestone.
+replays it against two baselines and a candidate, and fails your CI build if the candidate
+regressed. Using two baselines separates real changes from noise such as timestamps and
+generated IDs.
 
 **Status: early development, not ready for production use.**
 
@@ -16,13 +16,10 @@ as a CI gate is the next milestone.
 | Synthetic fixtures with deliberate regressions | Implemented |
 | JSON comparison, noise handling, latency and error-rate checks | Implemented and tested |
 | Protobuf comparison | Planned |
-| CI reports (JSON, JUnit, Markdown) and policy | Planned |
+| CI gate with a policy, JSON, JUnit and Markdown reports | Implemented and tested. The workflow hasn't run on GitHub yet. |
 | Unary gRPC | Planned |
 | Helm sidecar, metrics, traces | Planned |
 | Overhead and throughput benchmarks | Planned. No performance numbers are claimed yet. |
-
-**`replaydiff report` currently always exits 2.** Findings are reported, but no CI policy
-judges them yet, and a CI job shouldn't be able to pass on findings nobody judged.
 
 ## Try it
 
@@ -56,9 +53,20 @@ replaydiff run --traffic ./traffic --report report.json --redact examples/redact
   --allow-origin http://127.0.0.1:18202 \
   --allow-origin http://127.0.0.1:18203
 
-# See what changed.
-replaydiff report report.json
+# Apply the CI policy. Exit 0 passes, 1 is a regression, 2 means the evidence is incomplete.
+replaydiff report report.json --markdown summary.md --junit junit.xml
 ```
+
+## Using it in CI
+
+| Exit code | Verdict | Meaning |
+|---|---|---|
+| 0 | `pass` | The evidence is complete and the candidate meets the policy |
+| 1 | `regression` | A finding fails the policy |
+| 2 | `incomplete` | Invalid input, a failure, or evidence that can't support a conclusion |
+
+`make gate-demo` proves all three against real processes. See the [CI guide](docs/ci.md) for the
+policy, waivers and a GitHub Actions example.
 
 ## Guarantees and their limits
 
@@ -75,8 +83,9 @@ replaydiff report report.json
   however much its value varies between baselines. Too little evidence is reported as
   uncertain, not as a pass. See [comparison](docs/diffing.md) for how this works and what it
   can't catch.
-- **Incomplete evidence can't exit 0.** That includes zero eligible records, a damaged
-  dataset, a failed baseline, and an interrupted run.
+- **Incomplete evidence can't pass.** That includes zero eligible records, a damaged dataset, a
+  failed baseline, an interrupted run, and a report whose figures disagree. Reports aren't signed, so
+  this doesn't stop deliberate forgery. A pass only speaks for the traffic that was replayed.
 
 ## Documentation
 
@@ -86,6 +95,7 @@ replaydiff report report.json
 - [Replay](docs/replay.md)
 - [Protocols](docs/protocols.md)
 - [Comparison](docs/diffing.md)
+- [CI gate](docs/ci.md)
 - [Fixtures](docs/fixtures.md)
 - [Related tools](docs/related-tools.md)
 - [Decision records](docs/adr/)

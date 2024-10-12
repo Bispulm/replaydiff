@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"regexp"
 	"strings"
@@ -200,22 +201,26 @@ func (c *Config) validate() error {
 	switch {
 	case c.Noise.MinObservations < 0:
 		return errors.New("noise.min_observations must not be negative")
-	case c.Noise.Margin < 0 || c.Noise.Margin > 1:
+	case !(c.Noise.Margin >= 0 && c.Noise.Margin <= 1):
 		return errors.New("noise.margin must be between 0 and 1")
-	case c.Latency.MinSamples < 0, c.Latency.MaxIncreasePercent < 0, c.Latency.MinIncreaseMillis < 0:
-		return errors.New("latency values must not be negative")
-	case c.ErrorRate.MinRequests < 0, c.ErrorRate.MaxIncreasePoints < 0:
-		return errors.New("error_rate values must not be negative")
+	case c.Latency.MinSamples < 0, !nonNegativeFinite(c.Latency.MaxIncreasePercent), !nonNegativeFinite(c.Latency.MinIncreaseMillis):
+		return errors.New("latency values must be finite and not negative")
+	case c.ErrorRate.MinRequests < 0, !nonNegativeFinite(c.ErrorRate.MaxIncreasePoints):
+		return errors.New("error_rate values must be finite and not negative")
 	case c.Limits.MaxRoutes < 0, c.Limits.MaxFieldsPerRoute < 0, c.Limits.MaxFindings < 0, c.Limits.MaxEvidenceBytes < 0:
 		return errors.New("limits must not be negative")
 	}
 	for _, percentile := range c.Latency.Percentiles {
-		if percentile <= 0 || percentile > 100 {
+		if !(percentile > 0 && percentile <= 100) {
 			return fmt.Errorf("latency.percentiles: %v isn't between 0 and 100", percentile)
 		}
 	}
 	return nil
 }
+
+// nonNegativeFinite is written so that NaN fails it. NaN compares false with everything,
+// so a limit of NaN would otherwise never be exceeded.
+func nonNegativeFinite(v float64) bool { return v >= 0 && !math.IsInf(v, 1) }
 
 func validateFieldPaths(paths []string) error {
 	for _, path := range paths {
@@ -226,8 +231,9 @@ func validateFieldPaths(paths []string) error {
 	return nil
 }
 
-// pathMatchesRule reports whether a normalized field path is the rule's path or
-// inside it.
+// PathCovers reports whether a normalized field path is the rule's path or inside it.
+func PathCovers(rule, path string) bool { return pathMatchesRule(rule, path) }
+
 func pathMatchesRule(rule, path string) bool {
 	if !strings.HasPrefix(path, rule) {
 		return false

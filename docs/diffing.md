@@ -3,8 +3,8 @@
 `replaydiff run` compares each record's responses from baseline A, baseline B and the
 candidate. The results go in the report's `comparison` section.
 
-**Severity isn't CI policy.** A finding says what was seen. Whether it fails a build will
-be decided by the CI policy, which is the next milestone. Until then `report` always exits 2.
+**Severity isn't CI policy.** A finding says what was seen. Whether it fails a build is decided
+by the [CI gate](ci.md).
 
 ## What is compared
 
@@ -157,8 +157,8 @@ Reaching a limit never hides anything silently:
 - Past `max_findings`, the list is cut, the severity counts stay complete, and `truncated` says how
   many were left out. The most severe findings come first.
 - Past `max_fields_per_route` or `max_routes`, an uncertain notice appears in `limited`. Those fields
-  aren't checked, and those routes are grouped together under `(other routes)`. `run` exits 2, because
-  part of the evidence wasn't compared.
+  aren't checked, and those routes are grouped together under `(other routes)`. `run` exits 2 and the gate
+  can't pass, because part of the evidence wasn't compared. Raise the limit to resolve it.
 
 ## Known limits
 

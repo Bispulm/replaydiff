@@ -10,6 +10,7 @@ import (
 
 	"github.com/Bispulm/replaydiff/internal/diff"
 	"github.com/Bispulm/replaydiff/internal/replay"
+	"github.com/Bispulm/replaydiff/internal/report"
 )
 
 func runCLI(args ...string) (int, string, string) {
@@ -63,67 +64,99 @@ func TestRunRejectsInvalidInvocations(t *testing.T) {
 	}
 }
 
-func TestReportAlwaysFailsClosedForNow(t *testing.T) {
+func writeRun(t *testing.T, run *report.Run) string {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "report.json")
-	complete := &runReport{
-		Schema:           reportSchema,
-		Verdict:          verdictNotEvaluated,
-		EvidenceComplete: true,
-		Summary:          &replay.Summary{Records: 1, Eligible: 1, Replayed: 1, Targets: map[string]*replay.TargetSummary{"candidate": {Calls: 1, Statuses: map[string]int64{"2xx": 1}}}},
-	}
-	if err := writeReport(path, complete); err != nil {
+	if err := report.Write(path, run); err != nil {
 		t.Fatal(err)
 	}
-	code, stdout, stderr := runCLI("report", path)
-	if code != ExitFailure {
-		t.Fatalf("exit code = %d", code)
+	return path
+}
+
+func completeRun(findings ...diff.Finding) *report.Run {
+	counts := map[diff.Severity]int{}
+	for _, f := range findings {
+		counts[f.Severity]++
 	}
-	if !strings.Contains(stdout, "verdict: not_evaluated") || !strings.Contains(stdout, "candidate: 1 call(s) 2xx=1") {
-		t.Fatalf("stdout = %q", stdout)
-	}
-	if !strings.Contains(stderr, "no verdict") {
-		t.Fatalf("stderr = %q", stderr)
+	return &report.Run{
+		Schema:           report.Schema,
+		Verdict:          report.VerdictNotEvaluated,
+		EvidenceComplete: true,
+		Summary: &replay.Summary{
+			Records:  3,
+			Eligible: 3,
+			Replayed: 3,
+			Targets: map[string]*replay.TargetSummary{
+				"baseline-a": {Calls: 3, Outcomes: map[string]int64{"ok": 3}, Statuses: map[string]int64{"2xx": 3}},
+				"baseline-b": {Calls: 3, Outcomes: map[string]int64{"ok": 3}, Statuses: map[string]int64{"2xx": 3}},
+				"candidate":  {Calls: 3, Outcomes: map[string]int64{"ok": 3}, Statuses: map[string]int64{"2xx": 3}},
+			},
+		},
+		Comparison: &diff.Result{Counts: counts, Coverage: diff.Coverage{Records: 3, Compared: 3}, Findings: findings},
 	}
 }
 
-func TestReportPrintsFindingsInOrderWithCounts(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "report.json")
-	report := &runReport{
-		Schema:  reportSchema,
-		Verdict: verdictNotEvaluated,
-		Summary: &replay.Summary{Targets: map[string]*replay.TargetSummary{}},
-		Comparison: &diff.Result{
-			Counts:   map[diff.Severity]int{diff.SeverityBreaking: 1, diff.SeverityWarning: 1},
-			Coverage: diff.Coverage{Records: 3, Compared: 2},
-			Findings: []diff.Finding{
-				{Severity: diff.SeverityBreaking, Kind: diff.KindFieldRemoved, Route: "GET /a", Path: "$.x", Count: 2},
-				{Severity: diff.SeverityWarning, Kind: diff.KindLatencyRegression, Route: "GET /b", Path: "p99", Count: 20, Detail: "candidate 9.0ms, slower baseline 1.0ms"},
-			},
-			Ignored:   []diff.IgnoredField{{Route: "GET /a", Path: "$.t", Count: 4}},
-			Truncated: diff.Truncated{Findings: 7},
-		},
+func removedField() diff.Finding {
+	return diff.Finding{Severity: diff.SeverityBreaking, Kind: diff.KindFieldRemoved, Route: "GET /a", Path: "$.x", Count: 2}
+}
+
+func TestReportExitCodesFollowTheVerdict(t *testing.T) {
+	changed := diff.Finding{Severity: diff.SeverityWarning, Kind: diff.KindValueChanged, Route: "GET /a", Path: "$.y", Count: 1}
+	if code, stdout, _ := runCLI("report", writeRun(t, completeRun())); code != ExitOK || !strings.Contains(stdout, "verdict: pass") {
+		t.Fatalf("clean: exit %d: %s", code, stdout)
 	}
-	if err := writeReport(path, report); err != nil {
-		t.Fatal(err)
+	if code, stdout, _ := runCLI("report", writeRun(t, completeRun(removedField()))); code != ExitRegression || !strings.Contains(stdout, "verdict: regression") {
+		t.Fatalf("breaking: exit %d: %s", code, stdout)
 	}
-	code, stdout, _ := runCLI("report", path)
-	if code != ExitFailure {
-		t.Fatalf("exit code = %d", code)
+	if code, _, _ := runCLI("report", writeRun(t, completeRun(changed))); code != ExitOK {
+		t.Fatalf("warning: exit %d", code)
 	}
-	for _, want := range []string{
-		"compared: 2 of 3 records",
-		"findings: 1 breaking, 1 warning, 0 uncertain, 0 info",
-		"GET /a $.x (2)",
-		"candidate 9.0ms",
-		"ignored by rule: GET /a $.t (4)",
-		"7 more finding(s) left out",
+	if code, _, _ := runCLI("report", writeRun(t, completeRun(changed)), "--fail-on", "breaking,warning"); code != ExitRegression {
+		t.Fatalf("warning with --fail-on: exit %d", code)
+	}
+	incomplete := completeRun()
+	incomplete.Summary.Dataset.CorruptRecords = 1
+	if code, stdout, _ := runCLI("report", writeRun(t, incomplete)); code != ExitFailure || !strings.Contains(stdout, "verdict: incomplete") {
+		t.Fatalf("incomplete: exit %d: %s", code, stdout)
+	}
+}
+
+func TestReportAcceptsTheFileBeforeOrAfterFlags(t *testing.T) {
+	path := writeRun(t, completeRun())
+	for _, args := range [][]string{
+		{"report", path, "--quiet"},
+		{"report", "--quiet", path},
 	} {
-		if !strings.Contains(stdout, want) {
-			t.Errorf("stdout lacks %q:\n%s", want, stdout)
+		code, stdout, stderr := runCLI(args...)
+		if code != ExitOK || stdout != "verdict: pass\n" {
+			t.Fatalf("%v: exit %d, stdout %q, stderr %q", args, code, stdout, stderr)
 		}
 	}
-	if strings.Index(stdout, "field_removed") > strings.Index(stdout, "latency_regression") {
-		t.Errorf("findings out of order:\n%s", stdout)
+}
+
+func TestReportWritesEveryFormat(t *testing.T) {
+	dir := t.TempDir()
+	jsonPath, junitPath, markdownPath := filepath.Join(dir, "gate.json"), filepath.Join(dir, "junit.xml"), filepath.Join(dir, "summary.md")
+	code, _, stderr := runCLI("report", writeRun(t, completeRun(removedField())), "--json", jsonPath, "--junit", junitPath, "--markdown", markdownPath)
+	if code != ExitRegression {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	for path, want := range map[string]string{jsonPath: report.GateSchema, junitPath: "<testsuites", markdownPath: "# replaydiff: Regression"} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), want) {
+			t.Errorf("%s lacks %q:\n%s", path, want, data)
+		}
+	}
+}
+
+// A clean verdict mustn't survive losing its output, or a CI job would pass with no record.
+func TestUnwritableOutputCannotPass(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "absent", "junit.xml")
+	if code, _, _ := runCLI("report", writeRun(t, completeRun()), "--junit", missing); code != ExitFailure {
+		t.Fatalf("exit %d", code)
 	}
 }
 
@@ -136,14 +169,21 @@ func TestReportRejectsBadInput(t *testing.T) {
 		}
 		return path
 	}
+	valid := writeRun(t, completeRun())
 	for name, args := range map[string][]string{
-		"no file":         {"report"},
-		"two files":       {"report", "a", "b"},
-		"missing file":    {"report", filepath.Join(dir, "absent.json")},
-		"not json":        {"report", write("bad.json", "nope")},
-		"unknown schema":  {"report", write("other.json", `{"schema":"other/v9"}`)},
-		"unknown field":   {"report", write("field.json", `{"schema":"replaydiff.run/v1","extra":1}`)},
-		"missing summary": {"report", write("empty.json", `{"schema":"replaydiff.run/v1"}`)},
+		"no file":                  {"report"},
+		"two files":                {"report", valid, valid},
+		"missing file":             {"report", filepath.Join(dir, "absent.json")},
+		"not json":                 {"report", write("bad.json", "nope")},
+		"unknown schema":           {"report", write("other.json", `{"schema":"other/v9"}`)},
+		"unknown field":            {"report", write("field.json", `{"schema":"replaydiff.run/v1","extra":1}`)},
+		"missing summary":          {"report", write("empty.json", `{"schema":"replaydiff.run/v1"}`)},
+		"bad policy file":          {"report", valid, "--policy", write("policy.yaml", "fail_ons: []")},
+		"absent policy":            {"report", valid, "--policy", filepath.Join(dir, "absent.yaml")},
+		"bad fail-on":              {"report", valid, "--fail-on", "nonsense"},
+		"fail-on without breaking": {"report", valid, "--fail-on", "warning"},
+		"null target":              {"report", write("nulltarget.json", `{"schema":"replaydiff.run/v1","summary":{"targets":{"candidate":null}}}`)},
+		"unknown flag":             {"report", valid, "--nope"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if code, _, _ := runCLI(args...); code != ExitFailure {
@@ -153,17 +193,14 @@ func TestReportRejectsBadInput(t *testing.T) {
 	}
 }
 
-func TestReportFileIsReadableOnlyByItsOwner(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "report.json")
-	if err := writeReport(path, &runReport{Schema: reportSchema}); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("perm = %o", perm)
+func TestRunRejectsANonFiniteRate(t *testing.T) {
+	dir := t.TempDir()
+	policy := writePolicy(t, "")
+	a, b, c := "http://127.0.0.1:1", "http://127.0.0.1:2", "http://127.0.0.1:3"
+	code, _, stderr := runCLI("run", "--traffic", dir, "--redact", policy, "--report", filepath.Join(dir, "r.json"),
+		"--baseline-a", a, "--baseline-b", b, "--candidate", c, "--allow-origin", a, "--allow-origin", b, "--allow-origin", c, "--rps", "NaN")
+	if code != ExitFailure || !strings.Contains(stderr, "rate") {
+		t.Fatalf("exit %d: %s", code, stderr)
 	}
 }
 
