@@ -20,7 +20,9 @@ import (
 	"strings"
 
 	"github.com/klauspost/compress/zstd"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"github.com/Bispulm/replaydiff/internal/protoset"
 	"github.com/Bispulm/replaydiff/internal/traffic"
 )
 
@@ -98,13 +100,15 @@ var hopByHopHeaders = map[string]bool{
 // bodyDerivedHeaders describe the original bytes rather than the stored ones.
 // A stored digest could also be used to confirm guesses at a redacted value.
 var bodyDerivedHeaders = map[string]bool{
-	"Content-Length":   true,
-	"Content-Encoding": true,
-	"Content-Md5":      true,
-	"Digest":           true,
-	"Content-Digest":   true,
-	"Repr-Digest":      true,
-	"Etag":             true,
+	"Content-Length":       true,
+	"Content-Encoding":     true,
+	"Grpc-Encoding":        true,
+	"Grpc-Accept-Encoding": true,
+	"Content-Md5":          true,
+	"Digest":               true,
+	"Content-Digest":       true,
+	"Repr-Digest":          true,
+	"Etag":                 true,
 }
 
 // HeaderIsDropped reports whether a header is never kept, whatever the policy, because
@@ -165,6 +169,9 @@ type Options struct {
 	// SessionSecret keys session digests. Nil generates a random secret, which
 	// limits correlation to the engine's lifetime.
 	SessionSecret []byte
+	// Descriptors interpret gRPC messages. Without them, gRPC bodies can't be
+	// sanitized and are never stored.
+	Descriptors *protoset.Set
 }
 
 // Engine applies a Policy. It is safe for concurrent use.
@@ -178,6 +185,8 @@ type Engine struct {
 	sessionSecret   []byte
 	maxDecompressed int64
 	zdec            *zstd.Decoder
+	descriptors     *protoset.Set
+	protoRules      map[protoreflect.FullName]string
 }
 
 // NewEngine compiles a policy. Close releases its resources.
@@ -223,6 +232,24 @@ func NewEngine(policy *Policy, opts Options) (*Engine, error) {
 		}
 		e.sessionSources = append(e.sessionSources, [2]string{kind, name})
 	}
+	e.descriptors = opts.Descriptors
+	e.protoRules = make(map[protoreflect.FullName]string, len(policy.ProtoFields))
+	if len(policy.ProtoFields) > 0 && opts.Descriptors == nil {
+		return nil, errors.New("proto_fields need a descriptor set to resolve against")
+	}
+	for _, name := range policy.ProtoFields {
+		// A rule naming a field that doesn't exist would silently protect nothing.
+		field, err := opts.Descriptors.Field(name)
+		if err != nil {
+			return nil, fmt.Errorf("proto_fields: %w", err)
+		}
+		// Nor would one naming the key or value of a map's entries, which aren't fields
+		// that messages hold.
+		if entry := field.ContainingMessage(); entry.IsMapEntry() {
+			return nil, fmt.Errorf("proto_fields: %q is a map entry's key or value; name the map field %s instead, which is emptied", name, mapFieldOf(entry))
+		}
+		e.protoRules[field.FullName()] = name
+	}
 	if len(e.sessionSecret) == 0 {
 		e.sessionSecret = make([]byte, 32)
 		if _, err := rand.Read(e.sessionSecret); err != nil {
@@ -242,6 +269,9 @@ func NewEngine(policy *Policy, opts Options) (*Engine, error) {
 
 // Close releases the engine's resources.
 func (e *Engine) Close() { e.zdec.Close() }
+
+// Descriptors returns the descriptor set gRPC bodies are interpreted with, or nil.
+func (e *Engine) Descriptors() *protoset.Set { return e.descriptors }
 
 // PolicyDigest identifies the policy this engine applies.
 func (e *Engine) PolicyDigest() string { return e.policyDigest }
@@ -281,9 +311,23 @@ func (e *Engine) Headers(location Location, h http.Header, hits *Hits) map[strin
 	return out
 }
 
+// opaqueHeaders can hold anything and can't be checked against rules: grpc-message is
+// free text that servers fill with whatever went wrong, and the details are binary.
+var opaqueHeaders = map[string]string{
+	"Grpc-Message":            "grpc-message",
+	"Grpc-Status-Details-Bin": "binary-metadata",
+}
+
 func (e *Engine) headerRule(name string) string {
 	if rule, ok := e.headers[name]; ok {
 		return rule
+	}
+	if rule, ok := opaqueHeaders[name]; ok {
+		return rule
+	}
+	// gRPC binary metadata is base64, which no rule can look inside.
+	if strings.HasSuffix(name, "-Bin") {
+		return "binary-metadata"
 	}
 	lower := strings.ToLower(name)
 	for _, part := range sensitiveNameParts {
@@ -607,4 +651,17 @@ func sessionValue(kind, name string, h http.Header, rawQuery string) string {
 		}
 	}
 	return ""
+}
+
+// mapFieldOf names the map field whose entries the given message describes.
+func mapFieldOf(entry protoreflect.MessageDescriptor) protoreflect.FullName {
+	if parent, ok := entry.Parent().(protoreflect.MessageDescriptor); ok {
+		fields := parent.Fields()
+		for i := range fields.Len() {
+			if field := fields.Get(i); field.IsMap() && field.Message().FullName() == entry.FullName() {
+				return field.FullName()
+			}
+		}
+	}
+	return entry.FullName()
 }

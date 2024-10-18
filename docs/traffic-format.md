@@ -73,6 +73,10 @@ JSON encodes them as base64. A body is always in exactly one state:
 | `truncated` | Ended early on the wire | No |
 | `unavailable` | Never observed | No |
 
+A gRPC record has `protocol` set to `grpc` and names its method in `rpc`, which must equal
+the request path, since replay checks one and sends the other. No other record has an
+`rpc`.
+
 `seq` is assigned when the request arrives. Files are written in completion
 order, so `seq` is what restores arrival order within a run. Runs are ordered by
 their earliest segment creation time.

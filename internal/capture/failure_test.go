@@ -208,6 +208,20 @@ func TestMalformedResponseBodyIsForwardedButNeverStored(t *testing.T) {
 	h.assertNoSecret(secret)
 }
 
+func TestResponseWithMoreThanOneContentTypeIsNotStored(t *testing.T) {
+	secret := sentinel(t)
+	h := newHarness(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header()["Content-Type"] = []string{"application/json", "text/plain"}
+		_, _ = io.WriteString(w, `{"note":"`+secret+`"}`)
+	}))
+	h.send(http.MethodGet, "/", nil, nil)
+	rec := h.onlyRecord()
+	if rec.Response.Body.State != traffic.BodyOmitted || rec.Response.Body.Reason != ReasonAmbiguousContentType {
+		t.Fatalf("response body = %+v", rec.Response.Body)
+	}
+	h.assertNoSecret(secret)
+}
+
 func TestUnsupportedRequestContentTypeIsNotStoredOrReplayable(t *testing.T) {
 	secret := sentinel(t)
 	h := newHarness(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { _, _ = io.Copy(io.Discard, r.Body) }))

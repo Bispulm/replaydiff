@@ -9,15 +9,14 @@ generated IDs.
 
 | Area | State |
 |---|---|
-| HTTP/1.1 and HTTP/2 capture proxy, bounded and non-blocking | Implemented and tested |
+| HTTP/1.1, HTTP/2 and unary gRPC capture proxy, bounded and non-blocking | Implemented and tested. Streaming gRPC is forwarded but not stored. |
 | Rule-based redaction before storage | Implemented and tested |
 | Recoverable, versioned traffic format | Implemented and tested |
 | Allowlisted, session-ordered replay with rate limits | Implemented and tested |
 | Synthetic fixtures with deliberate regressions | Implemented |
 | JSON comparison, noise handling, latency and error-rate checks | Implemented and tested |
-| Protobuf comparison | Planned |
-| CI gate with a policy, JSON, JUnit and Markdown reports | Implemented and tested. The workflow hasn't run on GitHub yet. |
-| Unary gRPC | Planned |
+| Protobuf redaction and comparison, from a descriptor set | Implemented and tested |
+| CI gate with a policy, JSON, JUnit and Markdown reports | Implemented and tested, including in this repository's CI |
 | Helm sidecar, metrics, traces | Planned |
 | Overhead and throughput benchmarks | Planned. No performance numbers are claimed yet. |
 

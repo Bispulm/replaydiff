@@ -197,6 +197,9 @@ func (r *recordCompare) field(path string) *fieldStats {
 func (c *Comparator) Observe(result *replay.RecordResult) {
 	a, b, candidate := &result.Calls[replay.RoleBaselineA], &result.Calls[replay.RoleBaselineB], &result.Calls[replay.RoleCandidate]
 	route := c.classifier.route(result.Method, result.Path)
+	if result.RPC != "" {
+		route = c.classifier.routeRPC(result.Method, result.RPC)
+	}
 	rc := &recordCompare{c: c, result: result, fields: make(map[string]*fieldStats)}
 	for i := range c.ignore {
 		if c.ignore[i].pattern.matches(result.Method, result.Path) {
@@ -240,13 +243,13 @@ func (c *Comparator) Observe(result *replay.RecordResult) {
 		}
 		existing.merge(stats)
 	}
-	if isErrorCall(a) {
+	if isErrorCall(a, result.RPC != "") {
 		state.baselineErrors++
 	}
-	if isErrorCall(b) {
+	if isErrorCall(b, result.RPC != "") {
 		state.baselineErrors++
 	}
-	if isErrorCall(candidate) {
+	if isErrorCall(candidate, result.RPC != "") {
 		state.candidateErrors++
 	}
 	if baselinesOK && candidate.Outcome == replay.CallOK {
@@ -261,8 +264,16 @@ func (c *Comparator) Observe(result *replay.RecordResult) {
 	}
 }
 
-func isErrorCall(call *replay.CallResult) bool {
-	return call.Outcome != replay.CallOK || call.Status >= 500
+// isErrorCall reports a failed call or a server fault. gRPC reports its faults in the
+// status, over HTTP 200, and a call that ends without one has failed too.
+func isErrorCall(call *replay.CallResult, grpc bool) bool {
+	if call.Outcome != replay.CallOK || call.Status >= 500 {
+		return true
+	}
+	if !grpc {
+		return false
+	}
+	return grpcFault(grpcCode(call))
 }
 
 func (r *recordCompare) evidence(field string, a, b, c Value) *Evidence {
@@ -298,6 +309,9 @@ func (r *recordCompare) compareCalls(a, b, candidate *replay.CallResult) {
 	}
 	if candidate.Status != a.Status {
 		overall.note(KindStatusChanged, statusEvidence())
+	}
+	if r.result.RPC != "" && !r.compareGRPCStatus(a, b, candidate) {
+		return
 	}
 
 	r.compareContentType(a, b, candidate)
@@ -364,6 +378,9 @@ type textBody string
 
 func (r *recordCompare) view(call *replay.CallResult) bodyView {
 	var discard redact.Hits
+	if r.result.RPC != "" {
+		return r.grpcView(call)
+	}
 	sanitized := r.c.engine.Body(redact.ResponseBody, redact.BodyInput{
 		ContentType:     call.Header.Get("Content-Type"),
 		ContentEncoding: strings.Join(call.Header.Values("Content-Encoding"), ","),
@@ -420,7 +437,7 @@ func (r *recordCompare) compareBodies(a, b, candidate *replay.CallResult) {
 }
 
 func typeName(v any) string {
-	switch v.(type) {
+	switch x := v.(type) {
 	case nil:
 		return "null"
 	case map[string]any:
@@ -435,6 +452,19 @@ func typeName(v any) string {
 		return "boolean"
 	case textBody:
 		return "text"
+	case protoMap:
+		return "map"
+	case protoEnum:
+		return "enum"
+	case protoBytes:
+		return "bytes"
+	case unknownField:
+		return "unknown_field"
+	case opaqueValue:
+		return "opaque"
+	case anyValue:
+		// The packed type is the value's type, so a change of type is a type change.
+		return "any:" + boundedTypeURL(x.TypeURL)
 	default:
 		return "unknown"
 	}
@@ -468,8 +498,16 @@ func (r *recordCompare) evidenceValue(v any, present bool) Value {
 		return Value{}
 	}
 	typ := typeName(v)
-	if text, ok := v.(textBody); ok {
-		return r.c.value(typ, string(text), true)
+	switch x := v.(type) {
+	case textBody:
+		return r.c.value(typ, string(x), true)
+	case protoEnum:
+		return r.c.value(typ, x.label(), true)
+	case unknownField:
+		// Its value was never kept, because no rule could have sanitized it.
+		return r.c.value(typ, x.Wire, true)
+	case opaqueValue:
+		return Value{Present: true, Type: typ}
 	}
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -533,12 +571,18 @@ func (r *recordCompare) compareNode(path, concrete string, depth int, a, b, c an
 	}
 
 	if depth < maxDepth {
-		switch ta {
-		case "object":
+		switch {
+		case ta == "object":
 			r.compareObjects(path, concrete, depth, a.(map[string]any), b.(map[string]any), c.(map[string]any))
 			return
-		case "array":
+		case ta == "array":
 			r.compareArrays(path, concrete, depth, a.([]any), b.([]any), c.([]any))
+			return
+		case ta == "map":
+			r.compareProtoMaps(path, concrete, depth, a.(protoMap), b.(protoMap), c.(protoMap))
+			return
+		case strings.HasPrefix(ta, "any:"):
+			r.compareObjects(path, concrete, depth, a.(anyValue).Tree, b.(anyValue).Tree, c.(anyValue).Tree)
 			return
 		}
 	}
@@ -681,6 +725,18 @@ func equalValues(a, b any) (equal, formatOnly bool) {
 	case textBody:
 		y, ok := b.(textBody)
 		return ok && x == y, false
+	case protoEnum:
+		y, ok := b.(protoEnum)
+		return ok && x.Number == y.Number, false
+	case protoBytes:
+		y, ok := b.(protoBytes)
+		return ok && x == y, false
+	case unknownField:
+		y, ok := b.(unknownField)
+		return ok && x.Wire == y.Wire, false
+	case opaqueValue:
+		y, ok := b.(opaqueValue)
+		return ok && x.Digest == y.Digest, false
 	default:
 		return canonical(a) == canonical(b), false
 	}

@@ -27,6 +27,8 @@ type Config struct {
 	Targets              map[string]string   `json:"targets"`
 	CredentialHeaders    map[string][]string `json:"credential_headers,omitempty"`
 	AllowMethods         []string            `json:"allow_methods,omitempty"`
+	AllowRPCs            []string            `json:"allow_rpcs,omitempty"`
+	DescriptorDigest     string              `json:"descriptor_digest,omitempty"`
 	RecordsPerSecond     float64             `json:"records_per_second"`
 	TargetCallsPerSecond float64             `json:"target_calls_per_second,omitempty"`
 	Concurrency          int                 `json:"concurrency"`

@@ -105,6 +105,14 @@ func TestValidateAcceptsValidRecord(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsGRPCRecord(t *testing.T) {
+	r := validRecord()
+	r.Protocol, r.Request.Method, r.Request.Path, r.RPC = ProtocolGRPC, "POST", "/pkg.Svc/Get", "/pkg.Svc/Get"
+	if err := r.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestValidateAcceptsRecordWithoutResponse(t *testing.T) {
 	rec := validRecord()
 	rec.Response = nil
@@ -116,15 +124,22 @@ func TestValidateAcceptsRecordWithoutResponse(t *testing.T) {
 
 func TestValidateRejectsUntrustedInput(t *testing.T) {
 	tests := map[string]func(*Record){
-		"wrong schema version":     func(r *Record) { r.SchemaVersion = 2 },
-		"missing id":               func(r *Record) { r.ID = "" },
-		"id with path characters":  func(r *Record) { r.ID = "../../etc/passwd" },
-		"oversized id":             func(r *Record) { r.ID = strings.Repeat("a", 65) },
-		"zero sequence":            func(r *Record) { r.Seq = 0 },
-		"zero capture time":        func(r *Record) { r.CapturedAt = time.Time{} },
-		"non-hex session key":      func(r *Record) { r.SessionKey = "not hex!" },
-		"oversized session key":    func(r *Record) { r.SessionKey = strings.Repeat("a", 129) },
-		"unknown protocol":         func(r *Record) { r.Protocol = "ftp" },
+		"wrong schema version":    func(r *Record) { r.SchemaVersion = 2 },
+		"missing id":              func(r *Record) { r.ID = "" },
+		"id with path characters": func(r *Record) { r.ID = "../../etc/passwd" },
+		"oversized id":            func(r *Record) { r.ID = strings.Repeat("a", 65) },
+		"zero sequence":           func(r *Record) { r.Seq = 0 },
+		"zero capture time":       func(r *Record) { r.CapturedAt = time.Time{} },
+		"non-hex session key":     func(r *Record) { r.SessionKey = "not hex!" },
+		"oversized session key":   func(r *Record) { r.SessionKey = strings.Repeat("a", 129) },
+		"unknown protocol":        func(r *Record) { r.Protocol = "ftp" },
+		"relative rpc":            func(r *Record) { r.RPC = "pkg.Svc/Method" },
+		"rpc with newline":        func(r *Record) { r.RPC = "/a\nb" },
+		"rpc on an http record":   func(r *Record) { r.RPC = r.Request.Path },
+		"grpc without an rpc":     func(r *Record) { r.Protocol = ProtocolGRPC },
+		// Replay checks the RPC against its allowlist, so it must be what is sent.
+		"rpc other than the path":  func(r *Record) { r.Protocol, r.RPC = ProtocolGRPC, "/pkg.Svc/Allowed" },
+		"descriptor not hex":       func(r *Record) { r.Descriptor = &DescriptorRef{SetDigest: "not hex"} },
 		"empty method":             func(r *Record) { r.Request.Method = "" },
 		"method with space":        func(r *Record) { r.Request.Method = "GET /x" },
 		"oversized method":         func(r *Record) { r.Request.Method = strings.Repeat("A", 33) },
