@@ -406,3 +406,26 @@ func TestAbortedResponseRecordsNoTrailers(t *testing.T) {
 		t.Fatalf("record = %+v", rec.Response)
 	}
 }
+
+func TestEachFinishedExchangeIsReported(t *testing.T) {
+	type seen struct {
+		protocol traffic.Protocol
+		took     time.Duration
+	}
+	var mu sync.Mutex
+	var reported []seen
+	h := newHarness(t, jsonHandler(`{"ok":true}`), func(cfg *Config) {
+		cfg.OnExchange = func(protocol traffic.Protocol, took time.Duration) {
+			mu.Lock()
+			defer mu.Unlock()
+			reported = append(reported, seen{protocol, took})
+		}
+	})
+	h.send(http.MethodGet, "/", nil, nil)
+	h.close()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(reported) != 1 || reported[0].protocol != traffic.ProtocolHTTP11 || reported[0].took <= 0 {
+		t.Fatalf("reported = %+v", reported)
+	}
+}

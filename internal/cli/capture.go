@@ -10,10 +10,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/Bispulm/replaydiff/internal/capture"
 	"github.com/Bispulm/replaydiff/internal/redact"
+	"github.com/Bispulm/replaydiff/internal/telemetry"
 )
 
 const captureUsage = `Usage: replaydiff capture --upstream URL --out DIR --redact FILE [flags]
@@ -47,6 +49,7 @@ func runCapture(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	upstreamH2C := fs.Bool("upstream-h2c", false, "send to the upstream using HTTP/2 without TLS, with no fallback")
 	upstreamCA := fs.String("upstream-ca-file", "", "PEM certificates to trust for an https upstream, instead of the system roots")
 	descriptorPath := fs.String("descriptor-set", "", descriptorSetUsage)
+	adminListen := fs.String("admin-listen", "", "address for /metrics, /livez and /readyz, apart from the proxy; empty disables them")
 	fs.Var(&maxRequest, "max-request-body", "largest request body to record")
 	fs.Var(&maxResponse, "max-response-body", "largest response body to record")
 	fs.Var(&memoryBudget, "memory-budget", "bytes of body data to hold across all exchanges")
@@ -113,7 +116,19 @@ func runCapture(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	limits.MaxRequestBodyBytes = int64(maxRequest)
 	limits.MaxResponseBodyBytes = int64(maxResponse)
 	limits.MemoryBudgetBytes = int64(memoryBudget)
-	recorder, err := capture.New(capture.Config{
+	tracing, err := telemetry.SetupTracing(ctx, "replaydiff-capture")
+	if err != nil {
+		return fail(stderr, "capture", err)
+	}
+	defer flushTraces(tracing, logger)
+	var recorder *capture.Capture
+	metrics := telemetry.NewCaptureMetrics(telemetry.CaptureMetricsConfig{
+		// Scrapes start only once the recorder exists.
+		Stats:             func() capture.Stats { return recorder.Stats() },
+		QueueCapacity:     limits.QueueCapacity,
+		MemoryBudgetBytes: limits.MemoryBudgetBytes,
+	})
+	recorder, err = capture.New(capture.Config{
 		Upstream:    target,
 		UpstreamH2C: *upstreamH2C,
 		UpstreamTLS: upstreamTLS,
@@ -121,6 +136,8 @@ func runCapture(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		Engine:      engine,
 		Limits:      limits,
 		Logger:      logger,
+		OnExchange:  metrics.ObserveExchange,
+		Tracer:      tracing.Tracer(),
 	})
 	if err != nil {
 		return fail(stderr, "capture", err)
@@ -150,6 +167,31 @@ func runCapture(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	}()
 	logger.Info("capture listening", "addr", listener.Addr().String())
 
+	// Ready while the proxy accepts traffic. It turns false as shutdown begins, so a
+	// load balancer stops sending before connections are closed.
+	var ready atomic.Bool
+	ready.Store(true)
+	stopAdmin := func() {}
+	if *adminListen != "" {
+		adminListener, err := lc.Listen(ctx, "tcp", *adminListen)
+		if err != nil {
+			_ = server.Close()
+			closeCtx, cancel := context.WithTimeout(context.Background(), *shutdown)
+			defer cancel()
+			return fail(stderr, "capture", errors.Join(fmt.Errorf("--admin-listen: %w", err), recorder.Close(closeCtx)))
+		}
+		admin := &http.Server{
+			Handler:           telemetry.AdminHandler(metrics.Gatherer(), ready.Load),
+			ReadHeaderTimeout: 10 * time.Second,
+			ErrorLog:          serverErrorLog(logger),
+		}
+		go func() { _ = admin.Serve(adminListener) }()
+		stopAdmin = func() { _ = admin.Close() }
+		logger.Info("admin listening", "admin_addr", adminListener.Addr().String())
+	}
+	// Scrapes keep working while recordings drain, until the process exits.
+	defer stopAdmin()
+
 	var failure error
 	select {
 	case err := <-serveErr:
@@ -157,6 +199,7 @@ func runCapture(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	case <-ctx.Done():
 		logger.Info("capture stopping")
 	}
+	ready.Store(false)
 
 	// Live requests get to finish, and their records are still accepted, before
 	// recording stops.

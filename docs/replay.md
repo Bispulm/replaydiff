@@ -24,6 +24,9 @@ replaydiff run --traffic ./traffic --report report.json --redact redact.yaml \
 - Nothing in a record can choose a destination. A record provides only a path and
   query, and the request URL is assembled field by field from the configured origin.
   `Host`, `Forwarded` and `X-Forwarded-*` from the recording are not sent.
+- Recorded `traceparent`, `tracestate` and `baggage` are not sent, since they belong to
+  the production call the record came from. With tracing on, each call carries replay's
+  own trace context instead. See [observability](observability.md).
 - Redirects are never followed. A 3xx response is recorded as the result.
 - Proxy environment variables such as `HTTP_PROXY` are ignored.
 

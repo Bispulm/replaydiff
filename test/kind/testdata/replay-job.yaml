@@ -1,0 +1,58 @@
+# Inspects the recording, replays it against the targets and applies the CI gate, reading
+# what the capture sidecar wrote to its claim.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: replay
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        - name: inspect
+          image: {{ .Image }}
+          imagePullPolicy: Never
+          args: [inspect, --traffic=/data/{{ .Pod }}]
+          volumeMounts: [{name: data, mountPath: /data}]
+          securityContext: &restricted
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+        - name: run
+          image: {{ .Image }}
+          imagePullPolicy: Never
+          args:
+            - run
+            - --traffic=/data/{{ .Pod }}
+            - --report=/data/report.json
+            - --redact=/etc/replaydiff/redact.yaml
+            - --baseline-a=http://baseline-a:8080
+            - --baseline-b=http://baseline-b:8080
+            - --candidate=http://candidate:8080
+            - --allow-origin=http://baseline-a:8080
+            - --allow-origin=http://baseline-b:8080
+            - --allow-origin=http://candidate:8080
+            - --rps=0
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: policy, mountPath: /etc/replaydiff, readOnly: true}
+          securityContext: *restricted
+      containers:
+        - name: report
+          image: {{ .Image }}
+          imagePullPolicy: Never
+          args: [report, /data/report.json]
+          volumeMounts: [{name: data, mountPath: /data}]
+          securityContext: *restricted
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: {{ .Release }}-replaydiff-traffic}
+        - name: policy
+          configMap: {name: {{ .Release }}-replaydiff-policy}

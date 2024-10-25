@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["app", "capture", "storage"],
+  "properties": {
+    "app": {
+      "type": "object",
+      "required": ["image", "port"],
+      "properties": {
+        "image": {
+          "type": "object",
+          "required": ["repository"],
+          "properties": {
+            "repository": {"type": "string", "minLength": 1},
+            "tag": {"type": "string"}
+          }
+        },
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+      }
+    },
+    "capture": {
+      "type": "object",
+      "required": ["image", "port", "adminPort", "redactPolicy"],
+      "properties": {
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "adminPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "redactPolicy": {"type": "string"},
+        "h2c": {"type": "boolean"},
+        "upstreamH2C": {"type": "boolean"}
+      }
+    },
+    "replicaCount": {"type": "integer", "minimum": 0},
+    "preStopSleepSeconds": {"type": "integer", "minimum": 0}
+  }
+}

@@ -18,6 +18,12 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
+
 	"github.com/Bispulm/replaydiff/internal/grpcwire"
 	"github.com/Bispulm/replaydiff/internal/protoset"
 	"github.com/Bispulm/replaydiff/internal/redact"
@@ -362,6 +368,8 @@ func (c *collector) add(update func(*Summary)) {
 // concurrently. Interruption isn't an error: it is reported in the Summary with
 // whatever was completed.
 func (e *Engine) Run(ctx context.Context, ds *traffic.Dataset, sink func(*RecordResult)) (*Summary, error) {
+	ctx, span := e.tracer().Start(ctx, "replaydiff run", trace.WithAttributes(attribute.Int("replaydiff.records", len(ds.Entries))))
+	defer span.End()
 	summary := &Summary{
 		Dataset:      ds.Integrity,
 		CaptureDrops: ds.CaptureDrops,
@@ -377,6 +385,7 @@ func (e *Engine) Run(ctx context.Context, ds *traffic.Dataset, sink func(*Record
 		e.schedule(ctx, ds, sessions, &collector{summary: summary}, sink)
 	}
 	summary.Interrupted = ctx.Err() != nil
+	span.SetAttributes(attribute.Int("replaydiff.replayed", summary.Replayed), attribute.Bool("replaydiff.complete", summary.Complete()))
 	summary.DurationSeconds = time.Since(start).Seconds()
 	if summary.DurationSeconds > 0 {
 		summary.RecordsPerSecond = float64(summary.Replayed) / summary.DurationSeconds
@@ -502,6 +511,12 @@ func (e *Engine) replayRecord(ctx context.Context, ds *traffic.Dataset, entry tr
 		return
 	}
 
+	ctx, span := e.tracer().Start(ctx, "replaydiff replay record", trace.WithAttributes(
+		attribute.String("replaydiff.record.id", rec.ID),
+		attribute.String("http.request.method", traffic.StandardMethod(rec.Request.Method)),
+		attribute.String("replaydiff.protocol", string(rec.Protocol)),
+	))
+	defer span.End()
 	result := &RecordResult{
 		ID:       rec.ID,
 		Seq:      rec.Seq,
@@ -568,8 +583,11 @@ func hasRedactedRequestValue(rec *traffic.Record) bool {
 
 // call makes exactly one attempt. The per-target permit is taken first, so a
 // saturated target doesn't sit on global permits other targets could be using.
-func (e *Engine) call(ctx context.Context, t *target, rec *traffic.Record) CallResult {
-	result := CallResult{Role: t.role.String()}
+func (e *Engine) call(ctx context.Context, t *target, rec *traffic.Record) (result CallResult) {
+	result = CallResult{Role: t.role.String()}
+	ctx, span := e.tracer().Start(ctx, "replaydiff replay call", trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attribute.String("replaydiff.role", t.role.String())))
+	defer func() { endCallSpan(span, &result) }()
 	select {
 	case t.permits <- struct{}{}:
 		defer func() { <-t.permits }()
@@ -603,6 +621,10 @@ func (e *Engine) call(ctx context.Context, t *target, rec *traffic.Record) CallR
 	if err != nil {
 		result.Outcome = CallInvalidRequest
 		return result
+	}
+	if e.cfg.Tracer != nil {
+		// After everything else, so this call's context is the only one sent.
+		propagation.TraceContext{}.Inject(ctx, propagation.HeaderCarrier(req.Header))
 	}
 
 	start := time.Now()
@@ -640,6 +662,29 @@ func (e *Engine) call(ctx context.Context, t *target, rec *traffic.Record) CallR
 	return result
 }
 
+// tracer returns the configured tracer, or one that records nothing.
+func (e *Engine) tracer() trace.Tracer {
+	if e.cfg.Tracer == nil {
+		return noop.NewTracerProvider().Tracer("")
+	}
+	return e.cfg.Tracer
+}
+
+// endCallSpan describes how a call ended. Nothing in it comes from the record.
+func endCallSpan(span trace.Span, result *CallResult) {
+	span.SetAttributes(attribute.String("replaydiff.outcome", string(result.Outcome)), attribute.Int("replaydiff.attempts", result.Attempts))
+	if result.Status != 0 {
+		span.SetAttributes(attribute.Int("http.response.status_code", result.Status))
+	}
+	if result.GRPCStatus != nil {
+		span.SetAttributes(attribute.Int("rpc.grpc.status_code", *result.GRPCStatus))
+	}
+	if result.Outcome != CallOK {
+		span.SetStatus(codes.Error, string(result.Outcome))
+	}
+	span.End()
+}
+
 func classifyError(ctx, callCtx context.Context, err error) CallOutcome {
 	switch {
 	case ctx.Err() != nil:
@@ -656,7 +701,11 @@ func classifyError(ctx, callCtx context.Context, err error) CallOutcome {
 // the transport, which decompresses transparently so that responses compare
 // equal whatever their wire encoding was.
 var droppedHeaders = map[string]bool{
-	"Accept-Encoding":      true,
+	"Accept-Encoding": true,
+	// Recorded trace context belongs to the production call it came from.
+	"Baggage":              true,
+	"Traceparent":          true,
+	"Tracestate":           true,
 	"Connection":           true,
 	"Content-Encoding":     true,
 	"Content-Length":       true,

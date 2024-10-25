@@ -67,6 +67,7 @@ func TestCaptureRejectsInvalidInvocations(t *testing.T) {
 		"negative workers":    {append([]string{"--workers", "-1"}, valid...), "negative"},
 		"unset secret env":    {append([]string{"--session-secret-env", "REPLAYDIFF_TEST_UNSET_VARIABLE"}, valid...), "REPLAYDIFF_TEST_UNSET_VARIABLE"},
 		"missing descriptors": {append([]string{"--descriptor-set", policy + ".absent"}, valid...), "descriptor set"},
+		"bad admin address":   {append([]string{"--listen", "127.0.0.1:0", "--admin-listen", "127.0.0.1:-1"}, valid...), "--admin-listen"},
 		"not descriptors":     {append([]string{"--descriptor-set", writePolicy(t, "not protobuf")}, valid...), "descriptor set"},
 		"proto rule, no set":  {[]string{"--upstream", "http://127.0.0.1:1", "--out", dir, "--redact", protoPolicy}, "--descriptor-set"},
 	} {

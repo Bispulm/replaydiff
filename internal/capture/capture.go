@@ -19,11 +19,17 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/Bispulm/replaydiff/internal/grpcwire"
 	"github.com/Bispulm/replaydiff/internal/redact"
@@ -48,6 +54,9 @@ const (
 	DropSanitizeFailure     DropReason = "sanitize_failure"
 	DropUnsupportedProtocol DropReason = "unsupported_protocol"
 )
+
+// DropReasons lists every reason a recording can be dropped.
+func DropReasons() []DropReason { return slices.Clone(allDropReasons) }
 
 var allDropReasons = []DropReason{
 	DropQueueFull, DropShuttingDown, DropShutdownDeadline, DropDeadlineExceeded,
@@ -132,6 +141,11 @@ type Config struct {
 	FS traffic.FS
 	// Logger receives operational logs, which never hold traffic content.
 	Logger *slog.Logger
+	// OnExchange, if set, is called on the request path when each exchange finishes,
+	// with its protocol and how long it took. It must be fast.
+	OnExchange func(protocol traffic.Protocol, took time.Duration)
+	// Tracer, if set, records a span for each exchange the workers handle.
+	Tracer trace.Tracer
 }
 
 // Stats is a snapshot of capture's counters.
@@ -155,6 +169,9 @@ type Capture struct {
 	budget   memoryBudget
 	encoder  *traffic.Encoder
 	writer   *traffic.Writer
+
+	onExchange func(traffic.Protocol, time.Duration)
+	tracer     trace.Tracer
 
 	// sanitize is a field so a test can make it fail.
 	sanitize func(*exchange) *traffic.Record
@@ -216,19 +233,21 @@ func New(cfg Config) (*Capture, error) {
 		logger = slog.Default()
 	}
 	c := &Capture{
-		upstream: cfg.Upstream,
-		engine:   cfg.Engine,
-		limits:   limits,
-		logger:   logger,
-		encoder:  encoder,
-		writer:   writer,
-		drops:    make(map[DropReason]*atomic.Int64, len(allDropReasons)),
-		warned:   make(map[DropReason]*atomic.Bool, len(allDropReasons)),
-		omitted:  make(map[string]int64),
-		queue:    make(chan *exchange, limits.QueueCapacity),
-		frames:   make(chan traffic.Frame, limits.Workers),
-		abort:    make(chan struct{}),
-		done:     make(chan struct{}),
+		upstream:   cfg.Upstream,
+		engine:     cfg.Engine,
+		limits:     limits,
+		logger:     logger,
+		onExchange: cfg.OnExchange,
+		tracer:     cfg.Tracer,
+		encoder:    encoder,
+		writer:     writer,
+		drops:      make(map[DropReason]*atomic.Int64, len(allDropReasons)),
+		warned:     make(map[DropReason]*atomic.Bool, len(allDropReasons)),
+		omitted:    make(map[string]int64),
+		queue:      make(chan *exchange, limits.QueueCapacity),
+		frames:     make(chan traffic.Frame, limits.Workers),
+		abort:      make(chan struct{}),
+		done:       make(chan struct{}),
 	}
 	c.budget.limit = limits.MemoryBudgetBytes
 	c.sanitize = c.sanitizeExchange
@@ -438,6 +457,9 @@ func (c *Capture) onProxyError(w http.ResponseWriter, r *http.Request, _ error) 
 func (c *Capture) finish(ex *exchange, r *http.Request, aborted bool) {
 	ex.total = time.Since(ex.start)
 	ex.finished = time.Now()
+	if c.onExchange != nil {
+		c.onExchange(exchangeProtocol(ex), ex.total)
+	}
 	if ex.reqTap == nil {
 		ex.reqBody.eof = true
 	} else {
@@ -513,23 +535,30 @@ func (c *Capture) countDrop(reason DropReason, seq uint64) {
 
 func (c *Capture) process(ex *exchange) {
 	defer ex.release(&c.budget)
+	result := "recorded"
+	drop := func(reason DropReason) {
+		c.countDrop(reason, ex.seq)
+		result = string(reason)
+	}
+	// Registered before the recovery below, so it runs after it and sees its result.
+	defer func() { c.traceExchange(ex, result) }()
 	// A bug in sanitizing must lose one record, not the process. The panic
 	// value is discarded because it could hold traffic content.
 	defer func() {
 		if recover() != nil {
-			c.countDrop(DropSanitizeFailure, ex.seq)
+			drop(DropSanitizeFailure)
 		}
 	}()
 
 	select {
 	case <-c.abort:
-		c.countDrop(DropShutdownDeadline, ex.seq)
+		drop(DropShutdownDeadline)
 		return
 	default:
 	}
 	deadline := ex.finished.Add(c.limits.ProcessingDeadline)
 	if time.Now().After(deadline) {
-		c.countDrop(DropDeadlineExceeded, ex.seq)
+		drop(DropDeadlineExceeded)
 		return
 	}
 
@@ -537,11 +566,11 @@ func (c *Capture) process(ex *exchange) {
 	if err != nil {
 		switch {
 		case errors.Is(err, traffic.ErrRecordTooLarge):
-			c.countDrop(DropRecordTooLarge, ex.seq)
+			drop(DropRecordTooLarge)
 		case errors.Is(err, traffic.ErrInvalidRecord):
-			c.countDrop(DropInvalidRecord, ex.seq)
+			drop(DropInvalidRecord)
 		default:
-			c.countDrop(DropEncodeError, ex.seq)
+			drop(DropEncodeError)
 		}
 		return
 	}
@@ -551,10 +580,50 @@ func (c *Capture) process(ex *exchange) {
 	select {
 	case c.frames <- frame:
 	case <-timer.C:
-		c.countDrop(DropDeadlineExceeded, ex.seq)
+		drop(DropDeadlineExceeded)
 	case <-c.abort:
-		c.countDrop(DropShutdownDeadline, ex.seq)
+		drop(DropShutdownDeadline)
 	}
+}
+
+// exchangeProtocol is the protocol an exchange used, with gRPC told apart from the HTTP
+// version carrying it.
+func exchangeProtocol(ex *exchange) traffic.Protocol {
+	if grpcwire.ContentKind(ex.reqHeader.Get("Content-Type")) != grpcwire.KindNone {
+		return traffic.ProtocolGRPC
+	}
+	return protocolOf(ex)
+}
+
+// traceExchange records one span for an exchange, timed from the request arriving to the
+// response finishing. Its parent is the client's trace, if the request carried one:
+// capture reads traceparent but never changes what it forwards. Attributes are drawn only
+// from constants and the status code, never from the request. "recorded" means the
+// record reached the writer, whose own failures are counted in metrics.
+func (c *Capture) traceExchange(ex *exchange, result string) {
+	if c.tracer == nil {
+		return
+	}
+	// Only traceparent: tracestate is vendor data of the client's choosing, which would
+	// otherwise be carried into the span and exported.
+	carrier := propagation.MapCarrier{"traceparent": ex.reqHeader.Get("Traceparent")}
+	parent := propagation.TraceContext{}.Extract(context.Background(), carrier)
+	_, span := c.tracer.Start(parent, "replaydiff capture",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithTimestamp(ex.start),
+		trace.WithAttributes(
+			attribute.String("http.request.method", traffic.StandardMethod(ex.method)),
+			attribute.String("replaydiff.protocol", string(exchangeProtocol(ex))),
+			attribute.String("replaydiff.transport", string(ex.outcome)),
+			attribute.String("replaydiff.capture.result", result),
+		))
+	if ex.hasResponse {
+		span.SetAttributes(attribute.Int("http.response.status_code", ex.status))
+	}
+	if ex.outcome != traffic.TransportOK {
+		span.SetStatus(codes.Error, string(ex.outcome))
+	}
+	span.End(trace.WithTimestamp(ex.finished))
 }
 
 func (c *Capture) writeLoop() {

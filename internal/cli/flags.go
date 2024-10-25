@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -16,12 +17,23 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Bispulm/replaydiff/internal/protoset"
 	"github.com/Bispulm/replaydiff/internal/redact"
+	"github.com/Bispulm/replaydiff/internal/telemetry"
 )
 
 const descriptorSetUsage = "compiled descriptor set (protoc --descriptor_set_out with --include_imports) that gRPC messages are read with"
+
+// flushTraces sends spans not yet exported, allowing a few seconds for it.
+func flushTraces(tracing *telemetry.Tracing, logger *slog.Logger) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := tracing.Shutdown(ctx); err != nil {
+		logger.Warn("not every span was exported", "error", err)
+	}
+}
 
 // loadDescriptors reads the --descriptor-set file. With no path there is no set, and gRPC
 // bodies can't be interpreted.
