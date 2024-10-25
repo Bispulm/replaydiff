@@ -92,6 +92,29 @@ Each pod records into a directory named after itself, under `/var/lib/replaydiff
 traffic volume. With more than one replica on a ReadWriteOnce claim, the pods must share a
 node. Otherwise use ReadWriteMany, or one claim per replica.
 
+## Compose
+
+[`compose.yaml`](../compose.yaml) runs a local stack on 127.0.0.1:
+
+| Service | Port | Purpose |
+|---|---|---|
+| `capture` | 18200, admin 18209 | The fixture's traffic port, recorded into the `traffic` volume |
+| `baseline-a`, `baseline-b`, `candidate` | 18201, 18202, 18203 | Replay targets. The candidate has the fixture's regressions. |
+| `prometheus` | 18205 | Scrapes capture every 5 seconds |
+| `grafana` | 18206 | Capture's dashboard, viewable without logging in |
+
+```bash
+make compose-up                                  # docker compose up --build --detach
+curl http://127.0.0.1:18200/v1/orders/ord-1      # recorded
+open http://127.0.0.1:18206                      # the dashboard
+docker compose stop capture                      # seals the recording
+docker compose run --rm replay                   # replays it against the three targets
+make compose-down                                # removes the stack and its volume
+```
+
+Every container except Prometheus and Grafana runs with a read-only filesystem, no new
+privileges and no capabilities.
+
 ## Replaying inside the cluster
 
 The image has no shell, so the simplest way to replay is a Job that mounts the claim once

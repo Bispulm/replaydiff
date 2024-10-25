@@ -74,7 +74,7 @@ func TestAssertAbsentDetectsBase64Encoding(t *testing.T) {
 	}
 }
 
-func newEngine(t *testing.T, policyYAML string) *Engine {
+func newEngine(t testing.TB, policyYAML string) *Engine {
 	t.Helper()
 	policy, err := ParsePolicy([]byte(policyYAML))
 	if err != nil {
