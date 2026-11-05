@@ -174,8 +174,8 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "replayed %d of %d eligible record(s), %d skipped, %d upstream call(s) in %.2fs\n",
 		summary.Replayed, summary.Eligible, summary.Records-summary.Eligible, summary.UpstreamCalls, summary.DurationSeconds)
 	fmt.Fprintf(stdout, "report: %s\n", *reportPath)
-	for reason, n := range summary.CaptureDrops {
-		fmt.Fprintf(stderr, "warning: capture dropped %d exchange(s): %s\n", n, reason)
+	for _, reason := range sortedKeys(summary.CaptureDrops) {
+		fmt.Fprintf(stderr, "warning: capture dropped %d exchange(s): %s\n", summary.CaptureDrops[reason], reason)
 	}
 	if !report.EvidenceComplete {
 		for _, problem := range report.Problems {
