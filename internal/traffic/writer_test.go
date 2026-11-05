@@ -356,6 +356,28 @@ func TestFailedRepairAbandonsSegmentAndStartsANewOne(t *testing.T) {
 	}
 }
 
+// A failed header write leaves a file behind. The next attempt must use a new
+// name, or O_EXCL would make every later write fail for the rest of the run.
+func TestFailedSegmentHeaderDoesNotBlockLaterSegments(t *testing.T) {
+	dir := t.TempDir()
+	enc := newTestEncoder(t)
+	w, _ := newFaultWriter(t, dir, func(call int, p []byte) (int, error) {
+		if call == 1 {
+			return 0, syscall.EIO
+		}
+		return len(p), nil
+	}, nil)
+	if err := w.Append(mustFrame(t, enc, recordWithSeq(1))); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("first append err = %v, want EIO", err)
+	}
+	if err := w.Append(mustFrame(t, enc, recordWithSeq(2))); err != nil {
+		t.Fatalf("second append: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCreateFailureIsReturned(t *testing.T) {
 	dir := t.TempDir()
 	enc := newTestEncoder(t)

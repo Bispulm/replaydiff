@@ -184,6 +184,10 @@ func (w *Writer) openSegment() error {
 	if err != nil {
 		return fmt.Errorf("traffic: create segment: %w", err)
 	}
+	// The name is used up as soon as the file exists, even if the header write
+	// below fails, because Create refuses to reuse it.
+	w.index++
+	w.started = true
 	data := header.marshal()
 	if _, err := file.Write(data); err != nil {
 		_ = file.Close()
@@ -194,8 +198,6 @@ func (w *Writer) openSegment() error {
 	w.sync = header.sync
 	w.offset = int64(len(data))
 	w.count = 0
-	w.index++
-	w.started = true
 	return nil
 }
 
@@ -203,7 +205,7 @@ func (w *Writer) writeFrame(kind byte, frame Frame) error {
 	header := frameHeader{
 		kind:      kind,
 		codec:     frame.codec,
-		storedLen: uint32(len(frame.stored)), //nolint:gosec // Bounded by HardMaxFrameBytes.
+		storedLen: uint32(len(frame.stored)),
 		rawLen:    frame.rawLen,
 		crc:       frame.crc,
 	}
