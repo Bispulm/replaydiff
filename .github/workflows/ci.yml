@@ -16,8 +16,27 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      # Without helm, the chart's tests skip.
+      - uses: azure/setup-helm@v5
+        with:
+          version: v4.3.1
       - run: go build ./...
       - run: go test -race -count=1 ./...
+
+  # Captures and replays through the Helm chart on a kind cluster the test creates itself.
+  kind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: azure/setup-helm@v5
+        with:
+          version: v4.3.1
+      - run: go install sigs.k8s.io/kind@v0.33.0
+      - run: make kind-test
 
   # Proves each gate outcome against real processes. The script fails unless a regression
   # exits 1, the same code exits 0 and a dead baseline exits 2, so this job stays green when
