@@ -158,8 +158,10 @@ type Capture struct {
 	// sanitize is a field so a test can make it fail.
 	sanitize func(*exchange) *traffic.Record
 
-	seq       atomic.Uint64
-	observed  atomic.Int64
+	seq      atomic.Uint64
+	observed atomic.Int64
+	// inflight counts requests still being served, so that Close can wait for them.
+	inflight  atomic.Int64
 	persisted atomic.Int64
 	syncFails atomic.Int64
 	drops     map[DropReason]*atomic.Int64
@@ -341,6 +343,9 @@ type exchangeKey struct{}
 
 // ServeHTTP forwards a request and records the exchange.
 func (c *Capture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Registered first, so it runs last: the exchange has been submitted by then.
+	c.inflight.Add(1)
+	defer c.inflight.Add(-1)
 	c.observed.Add(1)
 	ex := &exchange{
 		seq:       c.seq.Add(1),
@@ -569,10 +574,13 @@ func (c *Capture) closeWriter() error {
 }
 
 // Close stops recording and drains queued exchanges until ctx ends. It doesn't
-// stop the HTTP server, which the caller shuts down first so that in-flight
-// requests finish and are recorded. It is safe to call more than once.
+// stop the HTTP server, which the caller shuts down first. It then waits for any
+// request still being served, because an HTTP/2 server can finish shutting down
+// while the handler for a reset stream is still running. It is safe to call more
+// than once.
 func (c *Capture) Close(ctx context.Context) error {
 	c.closeOnce.Do(func() {
+		c.waitForHandlers(ctx)
 		c.submitMu.Lock()
 		c.closing = true
 		close(c.queue)
@@ -594,6 +602,21 @@ func (c *Capture) Close(ctx context.Context) error {
 		return errors.Join(ErrShutdownDeadline, c.closeErr)
 	case <-timer.C:
 		return ErrShutdownDeadline
+	}
+}
+
+// waitForHandlers returns once no request is being served, or when ctx ends. It polls,
+// because a request can begin at any time and a WaitGroup can't be waited on safely
+// while that happens.
+func (c *Capture) waitForHandlers(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for c.inflight.Load() > 0 {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }
 
