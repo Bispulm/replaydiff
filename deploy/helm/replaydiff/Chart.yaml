@@ -1,0 +1,8 @@
+apiVersion: v2
+name: replaydiff
+description: Runs a service with replaydiff capture as a sidecar, recording redacted traffic for replay.
+type: application
+version: 0.1.0
+appVersion: "dev"
+# preStop sleep handlers need Kubernetes 1.30 or later.
+kubeVersion: ">=1.30.0-0"
