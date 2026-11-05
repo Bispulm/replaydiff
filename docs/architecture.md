@@ -13,11 +13,13 @@ flowchart LR
     E --> BA[Baseline A]
     E --> BB[Baseline B]
     E --> CD[Candidate]
-    E --> REP[Run report]
+    BA --> D[Sanitize and compare]
+    BB --> D
+    CD --> D
+    D --> REP[Run report]
 ```
 
-The diff engine, CI policy, gRPC and deployment are planned. The README's status table
-shows what exists today.
+CI policy, gRPC and deployment are planned. The README's status table shows what exists today.
 
 ## Capture
 
@@ -62,6 +64,7 @@ when the write returns.
 - [Redaction](redaction.md)
 - [Replay](replay.md)
 - [Protocols](protocols.md)
+- [Comparison](diffing.md)
 - [Fixtures](fixtures.md)
 - [Related tools](related-tools.md)
 - [Decision records](adr/)
