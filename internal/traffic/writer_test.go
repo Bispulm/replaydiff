@@ -253,7 +253,7 @@ func (f *faultFile) Truncate(size int64) error {
 
 func newFaultWriter(t *testing.T, dir string, fault func(int, []byte) (int, error), truncateErr error) (*Writer, *faultFS) {
 	t.Helper()
-	base, err := openOSFS(dir)
+	base, err := OpenDirFS(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +381,7 @@ func TestFailedSegmentHeaderDoesNotBlockLaterSegments(t *testing.T) {
 func TestCreateFailureIsReturned(t *testing.T) {
 	dir := t.TempDir()
 	enc := newTestEncoder(t)
-	base, err := openOSFS(dir)
+	base, err := OpenDirFS(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

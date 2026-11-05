@@ -7,6 +7,7 @@
 package traffic
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"strings"
@@ -164,6 +165,35 @@ type Record struct {
 	Outcome   Outcome    `json:"outcome"`
 	Redaction Redaction  `json:"redaction"`
 	Replay    ReplayInfo `json:"replay"`
+}
+
+const idAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+// NewID returns a 26 character identifier that sorts by time: 48 bits of
+// milliseconds followed by 80 random bits, in Crockford base32.
+func NewID(t time.Time) string {
+	var raw [16]byte
+	ms := uint64(t.UnixMilli()) //nolint:gosec // Times before 1970 aren't produced.
+	for i := range 6 {
+		raw[i] = byte(ms >> (40 - 8*i))
+	}
+	_, _ = rand.Read(raw[6:]) // crypto/rand.Read never returns an error.
+
+	// Encodes 130 bits: two zero bits, then the 128 bits of raw.
+	var out [26]byte
+	var acc uint32
+	bits := 2
+	pos := 0
+	for _, b := range raw {
+		acc = acc<<8 | uint32(b)
+		bits += 8
+		for bits >= 5 {
+			bits -= 5
+			out[pos] = idAlphabet[(acc>>bits)&31]
+			pos++
+		}
+	}
+	return string(out[:])
 }
 
 // ErrInvalidRecord wraps every validation failure.

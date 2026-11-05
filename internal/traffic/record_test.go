@@ -200,3 +200,22 @@ func TestValidationErrorsDoNotQuoteContent(t *testing.T) {
 		t.Fatalf("error quotes content: %v", err)
 	}
 }
+
+func TestNewIDIsValidUniqueAndTimeOrdered(t *testing.T) {
+	early := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	late := early.Add(time.Hour)
+	seen := make(map[string]bool)
+	for range 1000 {
+		id := NewID(early)
+		if !isIdentifier(id, MaxIDBytes) || len(id) != 26 {
+			t.Fatalf("id = %q", id)
+		}
+		if seen[id] {
+			t.Fatalf("duplicate id %q", id)
+		}
+		seen[id] = true
+		if id >= NewID(late) {
+			t.Fatalf("ids aren't time ordered: %q", id)
+		}
+	}
+}
