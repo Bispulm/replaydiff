@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"slices"
@@ -17,6 +18,7 @@ import (
 	"github.com/Bispulm/replaydiff/internal/redact"
 	"github.com/Bispulm/replaydiff/internal/replay"
 	"github.com/Bispulm/replaydiff/internal/report"
+	"github.com/Bispulm/replaydiff/internal/telemetry"
 	"github.com/Bispulm/replaydiff/internal/traffic"
 )
 
@@ -143,6 +145,13 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, "run", err)
 	}
+
+	tracing, err := telemetry.SetupTracing(ctx, "replaydiff-run")
+	if err != nil {
+		return fail(stderr, "run", err)
+	}
+	defer flushTraces(tracing, slog.New(slog.NewTextHandler(stderr, nil)))
+	cfg.Tracer = tracing.Tracer()
 
 	// Targets are checked before the dataset is opened, so a bad target can't
 	// have any effect.

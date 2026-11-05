@@ -18,6 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/Bispulm/replaydiff/internal/protoset"
 )
 
@@ -81,6 +83,9 @@ type Config struct {
 	// Descriptors is the schema recordings were sanitized with. Records made with
 	// another one are skipped. It is required when AllowRPCs is set.
 	Descriptors *protoset.Set
+	// Tracer, if set, records spans for the run, each record and each call, and each
+	// call carries their trace context. Recorded trace context is never sent.
+	Tracer trace.Tracer
 }
 
 func (c Config) withDefaults() Config {

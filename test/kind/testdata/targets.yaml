@@ -1,0 +1,44 @@
+# Replay targets: two baselines running the same code, and a candidate with the fixture's
+# deliberate regressions.
+{{- range $t := .Targets }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $t.Name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: {{ $t.Name }}}
+  template:
+    metadata:
+      labels: {app: {{ $t.Name }}}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: fixture
+          image: {{ $.Image }}
+          imagePullPolicy: Never
+          command: [/usr/local/bin/replaydiff-fixture]
+          args: [--listen=0.0.0.0:8080, --variant={{ $t.Variant }}, --instance={{ $t.Instance }}, --candidate-latency=120ms]
+          ports: [{containerPort: 8080}]
+          readinessProbe:
+            httpGet: {path: /v1/catalog, port: 8080}
+            periodSeconds: 2
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $t.Name }}
+spec:
+  selector: {app: {{ $t.Name }}}
+  ports: [{port: 8080, targetPort: 8080}]
+{{- end }}

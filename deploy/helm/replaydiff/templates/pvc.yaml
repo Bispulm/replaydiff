@@ -1,0 +1,19 @@
+{{- with .Values.storage.persistentVolumeClaim }}
+{{- if and .enabled (not .existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "replaydiff.claimName" $ }}
+  labels:
+    {{- include "replaydiff.labels" $ | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .accessModes | nindent 4 }}
+  {{- with .storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .size }}
+{{- end }}
+{{- end }}
