@@ -115,6 +115,9 @@ type observedRequest struct {
 	Host   string
 	Body   string
 	Header http.Header
+
+	ProtoMajor    int
+	ContentLength int64
 }
 
 // fakeTarget is a real local HTTP server recording what reaches it.
@@ -128,19 +131,25 @@ type fakeTarget struct {
 func newFakeTarget(t *testing.T, handler http.HandlerFunc) *fakeTarget {
 	t.Helper()
 	target := &fakeTarget{handler: handler}
-	target.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		target.mu.Lock()
-		target.requests = append(target.requests, observedRequest{
-			Method: r.Method, Path: r.URL.EscapedPath(), Query: r.URL.RawQuery, Host: r.Host, Body: string(body), Header: r.Header.Clone(),
-		})
-		target.mu.Unlock()
-		if target.handler != nil {
-			target.handler(w, r)
-		}
-	}))
+	target.Server = httptest.NewServer(target.record())
 	t.Cleanup(target.Close)
 	return target
+}
+
+// record returns the handler that notes each request before calling the test's.
+func (f *fakeTarget) record() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		f.mu.Lock()
+		f.requests = append(f.requests, observedRequest{
+			Method: r.Method, Path: r.URL.EscapedPath(), Query: r.URL.RawQuery, Host: r.Host, Body: string(body), Header: r.Header.Clone(),
+			ProtoMajor: r.ProtoMajor, ContentLength: r.ContentLength,
+		})
+		f.mu.Unlock()
+		if f.handler != nil {
+			f.handler(w, r)
+		}
+	})
 }
 
 func (f *fakeTarget) seen() []observedRequest {

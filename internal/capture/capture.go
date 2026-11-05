@@ -9,6 +9,7 @@ package capture
 import (
 	"cmp"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -120,8 +121,12 @@ type Config struct {
 	Engine *redact.Engine
 	// Limits bounds resource use.
 	Limits Limits
-	// Transport overrides the upstream transport.
-	Transport http.RoundTripper
+	// UpstreamH2C sends to the upstream using HTTP/2 without TLS, with no fallback
+	// to HTTP/1.1. It is for development, and requires an http:// upstream.
+	UpstreamH2C bool
+	// UpstreamTLS configures an https:// upstream, such as a private CA. HTTP/2
+	// is negotiated through ALPN when the upstream offers it.
+	UpstreamTLS *tls.Config
 	// FS overrides segment storage.
 	FS traffic.FS
 	// Logger receives operational logs, which never hold traffic content.
@@ -153,8 +158,10 @@ type Capture struct {
 	// sanitize is a field so a test can make it fail.
 	sanitize func(*exchange) *traffic.Record
 
-	seq       atomic.Uint64
-	observed  atomic.Int64
+	seq      atomic.Uint64
+	observed atomic.Int64
+	// inflight counts requests still being served, so that Close can wait for them.
+	inflight  atomic.Int64
 	persisted atomic.Int64
 	syncFails atomic.Int64
 	drops     map[DropReason]*atomic.Int64
@@ -187,6 +194,8 @@ func New(cfg Config) (*Capture, error) {
 		return nil, errors.New("capture: output directory is required")
 	case cfg.Engine == nil:
 		return nil, errors.New("capture: redaction engine is required")
+	case cfg.UpstreamH2C && cfg.Upstream.Scheme != "http":
+		return nil, errors.New("capture: h2c needs an http:// upstream; https negotiates HTTP/2 by itself")
 	}
 	if err := cfg.Limits.validate(); err != nil {
 		return nil, err
@@ -226,7 +235,7 @@ func New(cfg Config) (*Capture, error) {
 		c.drops[reason] = new(atomic.Int64)
 		c.warned[reason] = new(atomic.Bool)
 	}
-	c.proxy = c.newReverseProxy(cfg.Transport)
+	c.proxy = c.newReverseProxy(newUpstreamTransport(cfg))
 
 	c.workers.Add(limits.Workers)
 	for range limits.Workers {
@@ -251,18 +260,28 @@ func New(cfg Config) (*Capture, error) {
 	return c, nil
 }
 
-func (c *Capture) newReverseProxy(transport http.RoundTripper) *httputil.ReverseProxy {
-	if transport == nil {
-		t := http.DefaultTransport.(*http.Transport).Clone()
-		// The upstream is explicit config. An ambient proxy variable mustn't
-		// redirect live traffic.
-		t.Proxy = nil
-		// The client's own Accept-Encoding is forwarded, and compressed bytes
-		// pass through untouched.
-		t.DisableCompression = true
-		t.MaxIdleConnsPerHost = 256
-		transport = t
+func newUpstreamTransport(cfg Config) *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	// The upstream is explicit config. An ambient proxy variable mustn't redirect
+	// live traffic.
+	t.Proxy = nil
+	// The client's own Accept-Encoding is forwarded, and compressed bytes pass
+	// through untouched.
+	t.DisableCompression = true
+	t.MaxIdleConnsPerHost = 256
+	t.TLSClientConfig = cfg.UpstreamTLS.Clone()
+	t.Protocols = new(http.Protocols)
+	if cfg.UpstreamH2C {
+		// Only this: with HTTP/1 also enabled, the transport would use HTTP/1.
+		t.Protocols.SetUnencryptedHTTP2(true)
+	} else {
+		t.Protocols.SetHTTP1(true)
+		t.Protocols.SetHTTP2(true)
 	}
+	return t
+}
+
+func (c *Capture) newReverseProxy(transport http.RoundTripper) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(c.upstream)
@@ -324,6 +343,9 @@ type exchangeKey struct{}
 
 // ServeHTTP forwards a request and records the exchange.
 func (c *Capture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Registered first, so it runs last: the exchange has been submitted by then.
+	c.inflight.Add(1)
+	defer c.inflight.Add(-1)
 	c.observed.Add(1)
 	ex := &exchange{
 		seq:       c.seq.Add(1),
@@ -336,7 +358,10 @@ func (c *Capture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reqHeader: r.Header.Clone(),
 	}
 	forwarded := r.WithContext(context.WithValue(r.Context(), exchangeKey{}, ex))
-	if r.Body != nil && r.Body != http.NoBody {
+	// A zero length means no body, however the server represents it. Over HTTP/2
+	// the Body is non-nil, and the proxy correctly never reads it, so a tap would
+	// wait for an EOF that never comes.
+	if r.Body != nil && r.Body != http.NoBody && r.ContentLength != 0 {
 		ex.reqTap = newBodyTap(c.limits.MaxRequestBodyBytes, &c.budget)
 		forwarded.Body = &teeBody{ReadCloser: r.Body, tap: ex.reqTap}
 	}
@@ -549,10 +574,13 @@ func (c *Capture) closeWriter() error {
 }
 
 // Close stops recording and drains queued exchanges until ctx ends. It doesn't
-// stop the HTTP server, which the caller shuts down first so that in-flight
-// requests finish and are recorded. It is safe to call more than once.
+// stop the HTTP server, which the caller shuts down first. It then waits for any
+// request still being served, because an HTTP/2 server can finish shutting down
+// while the handler for a reset stream is still running. It is safe to call more
+// than once.
 func (c *Capture) Close(ctx context.Context) error {
 	c.closeOnce.Do(func() {
+		c.waitForHandlers(ctx)
 		c.submitMu.Lock()
 		c.closing = true
 		close(c.queue)
@@ -574,6 +602,21 @@ func (c *Capture) Close(ctx context.Context) error {
 		return errors.Join(ErrShutdownDeadline, c.closeErr)
 	case <-timer.C:
 		return ErrShutdownDeadline
+	}
+}
+
+// waitForHandlers returns once no request is being served, or when ctx ends. It polls,
+// because a request can begin at any time and a WaitGroup can't be waited on safely
+// while that happens.
+func (c *Capture) waitForHandlers(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for c.inflight.Load() > 0 {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }
 

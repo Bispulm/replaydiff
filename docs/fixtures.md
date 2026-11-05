@@ -39,3 +39,7 @@ replaydiff-fixture --variant candidate --instance c --listen 127.0.0.1:18203
 | `GET /v1/cart/{sid}/step/{n}` | Returns 409 when a session's steps arrive out of order |
 | `GET /v1/compressed` | Serves gzip when accepted |
 | `GET /v1/redirect` | Redirects off-origin to `forbidden.invalid` |
+| `GET /v1/protocol` | Reports the protocol the fixture saw, to prove a hop's HTTP version |
+
+`--h2c` serves only HTTP/2 without TLS. `--tls-cert` and `--tls-key` serve TLS and
+negotiate HTTP/2.
