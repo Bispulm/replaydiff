@@ -87,6 +87,24 @@ func TestParseConfigRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+// NaN compares false with everything, so a range check written with < and > lets it
+// through. A latency limit of NaN would then never report a regression.
+func TestNonFiniteValuesAreRefused(t *testing.T) {
+	for _, doc := range []string{
+		`noise: {margin: .nan}`,
+		`latency: {max_increase_percent: .nan}`,
+		`latency: {max_increase_percent: .inf}`,
+		`latency: {min_increase_ms: .nan}`,
+		`latency: {percentiles: [.nan]}`,
+		`error_rate: {max_increase_points: .nan}`,
+		`error_rate: {max_increase_points: .inf}`,
+	} {
+		if _, err := ParseConfig([]byte(doc)); err == nil {
+			t.Errorf("config must be refused: %s", doc)
+		}
+	}
+}
+
 func TestLoadConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "diff.yaml")
 	if err := os.WriteFile(path, []byte(`routes: ["GET /a"]`), 0o600); err != nil {

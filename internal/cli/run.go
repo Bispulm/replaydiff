@@ -2,14 +2,12 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -17,15 +15,9 @@ import (
 	"github.com/Bispulm/replaydiff/internal/diff"
 	"github.com/Bispulm/replaydiff/internal/redact"
 	"github.com/Bispulm/replaydiff/internal/replay"
+	"github.com/Bispulm/replaydiff/internal/report"
 	"github.com/Bispulm/replaydiff/internal/traffic"
 )
-
-// reportSchema identifies the run report format.
-const reportSchema = "replaydiff.run/v1"
-
-// verdictNotEvaluated says no CI policy has judged the findings yet. Keeping it in
-// the report means nobody can mistake a completed run for a passed check.
-const verdictNotEvaluated = "not_evaluated"
 
 const runUsage = `Usage: replaydiff run --traffic DIR --redact FILE --report FILE
                       --baseline-a URL --baseline-b URL --candidate URL
@@ -40,32 +32,6 @@ Exit codes:
   2  invalid configuration, execution failure, or incomplete evidence
 
 `
-
-// runReport is the file written by run and read by report.
-type runReport struct {
-	Schema           string                 `json:"schema"`
-	Verdict          string                 `json:"verdict"`
-	EvidenceComplete bool                   `json:"evidence_complete"`
-	Problems         []string               `json:"problems,omitempty"`
-	Config           reportConfig           `json:"config"`
-	Summary          *replay.Summary        `json:"summary"`
-	Comparison       *diff.Result           `json:"comparison,omitempty"`
-	Samples          []*replay.RecordResult `json:"samples,omitempty"`
-}
-
-// reportConfig records run settings. Credential values are deliberately absent:
-// it names only the headers each target was given.
-type reportConfig struct {
-	Targets              map[string]string   `json:"targets"`
-	CredentialHeaders    map[string][]string `json:"credential_headers,omitempty"`
-	AllowMethods         []string            `json:"allow_methods,omitempty"`
-	RecordsPerSecond     float64             `json:"records_per_second"`
-	TargetCallsPerSecond float64             `json:"target_calls_per_second,omitempty"`
-	Concurrency          int                 `json:"concurrency"`
-	PerTargetConcurrency int                 `json:"per_target_concurrency"`
-	MaxActiveSessions    int                 `json:"max_active_sessions"`
-	TimeoutSeconds       float64             `json:"timeout_seconds"`
-}
 
 type stringList []string
 
@@ -183,12 +149,12 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	comparison := comparator.Result()
 
-	report := &runReport{
-		Schema:           reportSchema,
-		Verdict:          verdictNotEvaluated,
+	result := &report.Run{
+		Schema:           report.Schema,
+		Verdict:          report.VerdictNotEvaluated,
 		EvidenceComplete: summary.Complete(),
 		Problems:         summary.Problems(),
-		Config: reportConfig{
+		Config: report.Config{
 			Targets:              map[string]string{"baseline-a": *baselineA, "baseline-b": *baselineB, "candidate": *candidate},
 			CredentialHeaders:    credentialHeaders,
 			AllowMethods:         methods,
@@ -203,7 +169,7 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		Comparison: comparison,
 		Samples:    samples.sorted(),
 	}
-	if err := writeReport(*reportPath, report); err != nil {
+	if err := report.Write(*reportPath, result); err != nil {
 		return fail(stderr, "run", err)
 	}
 
@@ -226,13 +192,13 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	for _, notice := range comparison.Limited {
 		fmt.Fprintf(stderr, "incomplete: %s on %s: %s\n", notice.Kind, notice.Route, notice.Detail)
 	}
-	if !report.EvidenceComplete || len(comparison.Limited) > 0 {
-		for _, problem := range report.Problems {
+	if !result.EvidenceComplete || len(comparison.Limited) > 0 {
+		for _, problem := range result.Problems {
 			fmt.Fprintf(stderr, "incomplete: %s\n", problem)
 		}
 		return ExitFailure
 	}
-	fmt.Fprintln(stderr, "note: this exit code covers the evidence, not the findings; no CI policy is applied yet")
+	fmt.Fprintln(stderr, "note: this exit code covers the evidence, not the findings; use report to apply the CI policy")
 	return ExitOK
 }
 
@@ -311,29 +277,4 @@ func (s *sampleSet) sorted() []*replay.RecordResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.items
-}
-
-// writeReport writes atomically, so a crash can't leave a partial report that a
-// later step mistakes for a complete one. The file is readable only by its owner.
-func writeReport(path string, report *runReport) error {
-	data, err := json.MarshalIndent(report, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode report: %w", err)
-	}
-	temp, err := os.CreateTemp(filepath.Dir(path), ".replaydiff-report-*")
-	if err != nil {
-		return fmt.Errorf("create report: %w", err)
-	}
-	defer func() { _ = os.Remove(temp.Name()) }()
-	if _, err := temp.Write(append(data, '\n')); err != nil {
-		_ = temp.Close()
-		return fmt.Errorf("write report: %w", err)
-	}
-	if err := temp.Close(); err != nil {
-		return fmt.Errorf("write report: %w", err)
-	}
-	if err := os.Rename(temp.Name(), path); err != nil {
-		return fmt.Errorf("write report: %w", err)
-	}
-	return nil
 }

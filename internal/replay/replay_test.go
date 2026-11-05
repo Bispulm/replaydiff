@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -236,6 +237,8 @@ func TestRejectsInvalidTargetsAndLimits(t *testing.T) {
 		"connect allowed":         func(cfg *Config) { cfg.AllowMethods = []string{"CONNECT"} },
 		"trace allowed":           func(cfg *Config) { cfg.AllowMethods = []string{"trace"} },
 		"negative rate":           func(cfg *Config) { cfg.RecordsPerSecond = -1 },
+		"rate not a number":       func(cfg *Config) { cfg.RecordsPerSecond = math.NaN() },
+		"infinite rate":           func(cfg *Config) { cfg.TargetCallsPerSecond = math.Inf(1) },
 		"invalid header name":     func(cfg *Config) { cfg.Candidate.Headers = http.Header{"Bad Name": {"x"}} },
 		"header with newline":     func(cfg *Config) { cfg.Candidate.Headers = http.Header{"X-A": {"a\nb"}} },
 	} {

@@ -239,9 +239,9 @@ func TestCaptureToReplayVerticalSlice(t *testing.T) {
 	inspected := runCommand(t, nil, "replaydiff", "inspect", "--traffic", s.trafficDir)
 	assertAbsent(t, "inspect output", inspected.stdout, secrets...)
 
-	// A completed replay still can't pass the gate, since nothing was compared.
+	// The seeded regressions in this traffic fail the gate.
 	gate := runCommand(t, nil, "replaydiff", "report", report)
-	if gate.code != 2 {
+	if gate.code != 1 {
 		t.Fatalf("report exit %d: %s", gate.code, gate.stdout)
 	}
 }

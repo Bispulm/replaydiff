@@ -1,33 +1,46 @@
 package cli
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"os"
-	"slices"
 	"strings"
 
-	"github.com/Bispulm/replaydiff/internal/diff"
+	"github.com/Bispulm/replaydiff/internal/report"
 )
 
-const reportUsage = `Usage: replaydiff report FILE
+const reportUsage = `Usage: replaydiff report FILE [flags]
 
-Print a summary of a run report and its findings.
+Apply the CI policy to a run report, print the outcome, and optionally write it in
+other formats. See docs/ci.md.
 
-There is no CI policy yet to judge the findings, so this command always exits 2,
-which means a CI job can't pass on findings nobody judged.
+Exit codes:
+  0  pass: the evidence is complete and the candidate meets the policy
+  1  regression: a finding fails the policy
+  2  incomplete: invalid input, a failure, or evidence that can't support a conclusion
+
+A confirmed regression exits 1 even if some evidence is also missing.
 
 `
 
 func runReportCommand(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("report", flag.ContinueOnError)
+	policyPath := fs.String("policy", "", "policy file; the default fails on breaking findings and any uncertainty")
+	failOn := fs.String("fail-on", "", "comma-separated severities and kinds that fail, overriding the policy")
+	jsonPath := fs.String("json", "", "write the decision and run as JSON to this file")
+	junitPath := fs.String("junit", "", "write JUnit XML to this file")
+	markdownPath := fs.String("markdown", "", "write Markdown to this file")
+	quiet := fs.Bool("quiet", false, "print only the verdict")
 	fs.Usage = func() {
 		fmt.Fprint(stderr, reportUsage)
 		fs.PrintDefaults()
+	}
+
+	// The file may come before the flags, which the flag package doesn't handle itself.
+	var file string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		file, args = args[0], args[1:]
 	}
 	fs.SetOutput(stderr)
 	if err := fs.Parse(args); err != nil {
@@ -36,86 +49,65 @@ func runReportCommand(args []string, stdout, stderr io.Writer) int {
 		}
 		return fail(stderr, "report", err)
 	}
-	if fs.NArg() != 1 {
+	switch {
+	case file == "" && fs.NArg() == 1:
+		file = fs.Arg(0)
+	case file == "" || fs.NArg() != 0:
 		fs.Usage()
 		return ExitFailure
 	}
 
-	data, err := os.ReadFile(fs.Arg(0))
+	policy, err := report.LoadPolicy(*policyPath)
 	if err != nil {
 		return fail(stderr, "report", err)
 	}
-	var report runReport
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&report); err != nil {
-		return fail(stderr, "report", fmt.Errorf("read report: %w", err))
-	}
-	if report.Schema != reportSchema {
-		return fail(stderr, "report", fmt.Errorf("unsupported report schema %q: this build reads %s", report.Schema, reportSchema))
-	}
-	if report.Summary == nil {
-		return fail(stderr, "report", errors.New("report has no summary"))
-	}
-
-	summary := report.Summary
-	fmt.Fprintf(stdout, "verdict: %s\n", report.Verdict)
-	fmt.Fprintf(stdout, "evidence complete: %t\n", report.EvidenceComplete)
-	fmt.Fprintf(stdout, "records: %d readable, %d eligible, %d replayed\n", summary.Records, summary.Eligible, summary.Replayed)
-	for _, reason := range sortedKeys(summary.Skipped) {
-		fmt.Fprintf(stdout, "skipped: %d %s\n", summary.Skipped[reason], reason)
-	}
-	for _, reason := range sortedKeys(summary.CaptureDrops) {
-		fmt.Fprintf(stdout, "capture dropped: %d %s\n", summary.CaptureDrops[reason], reason)
-	}
-	for _, role := range sortedKeys(summary.Targets) {
-		target := summary.Targets[role]
-		var statuses []string
-		for _, class := range sortedKeys(target.Statuses) {
-			statuses = append(statuses, fmt.Sprintf("%s=%d", class, target.Statuses[class]))
+	if *failOn != "" {
+		if err := policy.SetFailOn(*failOn); err != nil {
+			return fail(stderr, "report", err)
 		}
-		fmt.Fprintf(stdout, "%s: %d call(s) %s\n", role, target.Calls, strings.Join(statuses, " "))
 	}
-	for _, problem := range report.Problems {
-		fmt.Fprintf(stdout, "problem: %s\n", problem)
+	run, err := report.Load(file)
+	if err != nil {
+		return fail(stderr, "report", err)
 	}
-	printComparison(stdout, report.Comparison)
-	fmt.Fprintln(stderr, "replaydiff report: no CI policy is applied yet, so no verdict can be given")
-	return ExitFailure
+	decision := report.Evaluate(run, policy)
+
+	// Output comes first, so that a failed build still has its explanation. If it can't be
+	// written, the step failed and nothing can be called a pass.
+	if err := writeOutputs(run, decision, *jsonPath, *junitPath, *markdownPath); err != nil {
+		return fail(stderr, "report", err)
+	}
+	if *quiet {
+		fmt.Fprintf(stdout, "verdict: %s\n", decision.Verdict)
+	} else {
+		report.Text(stdout, run, decision)
+	}
+	return decision.ExitCode
 }
 
-func printComparison(w io.Writer, comparison *diff.Result) {
-	if comparison == nil {
-		return
-	}
-	fmt.Fprintf(w, "compared: %d of %d records\n", comparison.Coverage.Compared, comparison.Coverage.Records)
-	fmt.Fprintf(w, "findings: %d breaking, %d warning, %d uncertain, %d info\n",
-		comparison.Counts[diff.SeverityBreaking], comparison.Counts[diff.SeverityWarning],
-		comparison.Counts[diff.SeverityUncertain], comparison.Counts[diff.SeverityInfo])
-	for _, finding := range slices.Concat(comparison.Findings, comparison.Limited) {
-		fmt.Fprintf(w, "%-9s %-26s %s", finding.Severity, finding.Kind, finding.Route)
-		if finding.Path != "" {
-			fmt.Fprintf(w, " %s", finding.Path)
+func writeOutputs(run *report.Run, decision *report.Decision, jsonPath, junitPath, markdownPath string) error {
+	if jsonPath != "" {
+		data, err := report.JSON(run, decision)
+		if err != nil {
+			return err
 		}
-		fmt.Fprintf(w, " (%d)", finding.Count)
-		if finding.Detail != "" {
-			fmt.Fprintf(w, ": %s", finding.Detail)
+		if err := report.WriteOutput(jsonPath, data); err != nil {
+			return err
 		}
-		fmt.Fprintln(w)
 	}
-	for _, ignored := range comparison.Ignored {
-		fmt.Fprintf(w, "ignored by rule: %s %s (%d)\n", ignored.Route, ignored.Path, ignored.Count)
+	if junitPath != "" {
+		data, err := report.JUnit(run, decision)
+		if err != nil {
+			return err
+		}
+		if err := report.WriteOutput(junitPath, data); err != nil {
+			return err
+		}
 	}
-	if n := comparison.Truncated.Findings; n > 0 {
-		fmt.Fprintf(w, "%d more finding(s) left out; the counts above include them\n", n)
+	if markdownPath != "" {
+		if err := report.WriteOutput(markdownPath, []byte(report.Markdown(run, decision))); err != nil {
+			return err
+		}
 	}
-}
-
-func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	return keys
+	return nil
 }

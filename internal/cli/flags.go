@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -152,4 +153,13 @@ func listenerProtocols(h2c bool, certFile, keyFile string) (*http.Protocols, err
 		protocols.SetHTTP2(true)
 	}
 	return protocols, nil
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	return keys
 }
