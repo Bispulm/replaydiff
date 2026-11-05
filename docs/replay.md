@@ -119,11 +119,12 @@ sanitized with it before they're compared, because values from them can appear i
 
 ## Exit codes
 
-| Code | `run` | `report` |
-|---|---|---|
-| 0 | The replay finished with complete evidence, whatever the findings were | Not used yet |
-| 1 | Not used yet | Not used yet |
-| 2 | Invalid configuration, execution failure, or incomplete evidence | Always, until a CI policy exists |
+| Code | `run` |
+|---|---|
+| 0 | The replay finished with complete evidence, whatever the findings were |
+| 2 | Invalid configuration, execution failure, or incomplete evidence |
+
+**`run` doesn't judge findings.** Use [`report`](ci.md) as the CI gate.
 
 Evidence is incomplete when any of these is true:
 
@@ -134,14 +135,12 @@ Evidence is incomplete when any of these is true:
 - Any call to a baseline failed.
 
 A failing candidate doesn't make evidence incomplete, since finding that is the point.
-Records that capture dropped are shown as `capture_drops`. They're a warning for now,
-and whether they fail the gate will be part of the CI policy.
+Records that capture dropped are shown as `capture_drops`, and stop a pass at the gate unless
+its policy allows them.
 
 ## Current limits
 
 - gRPC is planned. HTTP/1.1 and HTTP/2 are described in [protocols](protocols.md).
-- No CI policy judges the [findings](diffing.md) yet, so the report's verdict is always
-  `not_evaluated`.
 - Request trailers in a recording aren't sent.
 - The report's samples include request paths, which redaction doesn't cover. See
   [redaction limits](redaction.md#known-limits).

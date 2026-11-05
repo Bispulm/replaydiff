@@ -17,9 +17,11 @@ flowchart LR
     BB --> D
     CD --> D
     D --> REP[Run report]
+    REP --> G[CI gate and policy]
+    G --> OUT[Exit code, JUnit, Markdown, JSON]
 ```
 
-CI policy, gRPC and deployment are planned. The README's status table shows what exists today.
+gRPC and deployment are planned. The README's status table shows what exists today.
 
 ## Capture
 
@@ -65,6 +67,7 @@ when the write returns.
 - [Replay](replay.md)
 - [Protocols](protocols.md)
 - [Comparison](diffing.md)
+- [CI gate](ci.md)
 - [Fixtures](fixtures.md)
 - [Related tools](related-tools.md)
 - [Decision records](adr/)

@@ -3,8 +3,8 @@
 `replaydiff run` compares each record's responses from baseline A, baseline B and the
 candidate. The results go in the report's `comparison` section.
 
-**Severity isn't CI policy.** A finding says what was seen. Whether it fails a build will
-be decided by the CI policy, which is the next milestone. Until then `report` always exits 2.
+**Severity isn't CI policy.** A finding says what was seen. Whether it fails a build is decided
+by the [CI gate](ci.md).
 
 ## What is compared
 
