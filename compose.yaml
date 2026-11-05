@@ -1,0 +1,96 @@
+# A local stack: the fixture behind capture, three replay targets, and Prometheus and
+# Grafana with capture's dashboard. Everything binds to 127.0.0.1, on ports 18200 to 18209.
+# See docs/deployment.md#compose.
+name: replaydiff
+
+x-image: &image
+  image: replaydiff:dev
+  build: .
+  read_only: true
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+
+services:
+  # The service whose traffic is captured. It's reachable only through capture.
+  orders:
+    <<: *image
+    entrypoint: [/usr/local/bin/replaydiff-fixture]
+    command: [--listen=0.0.0.0:8080, --variant=baseline, --instance=capture]
+
+  capture:
+    <<: *image
+    command:
+      - capture
+      - --listen=0.0.0.0:18200
+      - --admin-listen=0.0.0.0:18209
+      - --upstream=http://orders:8080
+      - --out=/var/lib/replaydiff/traffic
+      - --redact=/etc/replaydiff/redact.yaml
+    ports: ["127.0.0.1:18200:18200", "127.0.0.1:18209:18209"]
+    volumes:
+      - traffic:/var/lib/replaydiff
+      - ./examples/redact.yaml:/etc/replaydiff/redact.yaml:ro
+    depends_on: [orders]
+    stop_grace_period: 30s
+
+  baseline-a:
+    <<: *image
+    entrypoint: [/usr/local/bin/replaydiff-fixture]
+    command: [--listen=0.0.0.0:8080, --variant=baseline, --instance=a]
+    ports: ["127.0.0.1:18201:8080"]
+
+  baseline-b:
+    <<: *image
+    entrypoint: [/usr/local/bin/replaydiff-fixture]
+    command: [--listen=0.0.0.0:8080, --variant=baseline, --instance=b]
+    ports: ["127.0.0.1:18202:8080"]
+
+  candidate:
+    <<: *image
+    entrypoint: [/usr/local/bin/replaydiff-fixture]
+    command: [--listen=0.0.0.0:8080, --variant=candidate, --instance=c]
+    ports: ["127.0.0.1:18203:8080"]
+
+  # Replays what capture recorded. Stop capture first, so its recording is sealed:
+  #   docker compose stop capture && docker compose run --rm replay
+  replay:
+    <<: *image
+    profiles: [replay]
+    command:
+      - run
+      - --traffic=/var/lib/replaydiff/traffic
+      - --report=/var/lib/replaydiff/report.json
+      - --redact=/etc/replaydiff/redact.yaml
+      - --baseline-a=http://baseline-a:8080
+      - --baseline-b=http://baseline-b:8080
+      - --candidate=http://candidate:8080
+      - --allow-origin=http://baseline-a:8080
+      - --allow-origin=http://baseline-b:8080
+      - --allow-origin=http://candidate:8080
+      - --rps=0
+    volumes:
+      - traffic:/var/lib/replaydiff
+      - ./examples/redact.yaml:/etc/replaydiff/redact.yaml:ro
+    depends_on: [baseline-a, baseline-b, candidate]
+
+  prometheus:
+    image: prom/prometheus:v3.7.3
+    command: [--config.file=/etc/prometheus/prometheus.yml, --storage.tsdb.retention.time=1d]
+    ports: ["127.0.0.1:18205:9090"]
+    volumes: ["./deploy/compose/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+
+  grafana:
+    image: grafana/grafana:12.2.1
+    environment:
+      # A local demo: anyone who can reach 127.0.0.1:18206 can view, and nothing else.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    ports: ["127.0.0.1:18206:3000"]
+    volumes:
+      - ./deploy/compose/grafana:/etc/grafana/provisioning:ro
+      - ./deploy/grafana:/var/lib/grafana/dashboards:ro
+    depends_on: [prometheus]
+
+volumes:
+  traffic:

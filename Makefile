@@ -55,3 +55,10 @@ bench:
 .PHONY: bench-harness
 bench-harness: build
 	bin/replaydiff-bench --capture bin/replaydiff --out .bench
+
+# The local stack in compose.yaml. See docs/deployment.md#compose.
+.PHONY: compose-up compose-down
+compose-up:
+	docker compose up --build --detach
+compose-down:
+	docker compose down --volumes
