@@ -111,7 +111,12 @@ func (s *Service) requestID() string {
 	return s.opts.Instance + "-" + hex.EncodeToString(b[:])
 }
 
-func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
+// now returns a timestamp that differs on every call, even between replicas handling
+// a request at the same instant on a clock with coarse resolution.
+func now() string {
+	jitter := time.Duration(rand.IntN(int(time.Millisecond)))
+	return time.Now().Add(jitter).UTC().Format(time.RFC3339Nano)
+}
 
 func (s *Service) getOrder(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
