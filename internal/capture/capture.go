@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Bispulm/replaydiff/internal/grpcwire"
 	"github.com/Bispulm/replaydiff/internal/redact"
 	"github.com/Bispulm/replaydiff/internal/traffic"
 )
@@ -325,6 +326,9 @@ type exchange struct {
 	hasResponse bool
 	upgraded    bool
 	proxyFailed bool
+	// emptyResponse means the upstream ended the response in its headers. It is set
+	// before the proxy starts copying, which is when flushing can begin.
+	emptyResponse bool
 
 	headersAfter time.Duration
 	total        time.Duration
@@ -375,8 +379,30 @@ func (c *Capture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			panic(failure)
 		}
 	}()
-	c.proxy.ServeHTTP(w, forwarded)
+	c.proxy.ServeHTTP(&flushGate{ResponseWriter: w, ex: ex}, forwarded)
 }
+
+// flushGate withholds flushes of a response the upstream ended in its headers. The proxy
+// flushes headers at once, so that streamed bodies aren't held back, but over HTTP/2 that
+// sends them in a frame that doesn't end the stream. A gRPC Trailers-Only response then
+// reaches the client as headers followed by a stream with no trailers, and the client
+// reports INTERNAL instead of the real status. With no body to wait for, the headers go
+// out when the handler returns, in one frame that ends the stream.
+type flushGate struct {
+	http.ResponseWriter
+	ex *exchange
+}
+
+func (f *flushGate) Flush() {
+	if f.ex.emptyResponse {
+		return
+	}
+	_ = http.NewResponseController(f.ResponseWriter).Flush()
+}
+
+// Unwrap lets http.ResponseController reach the server's writer, for hijacking an
+// upgraded connection, for example.
+func (f *flushGate) Unwrap() http.ResponseWriter { return f.ResponseWriter }
 
 func (c *Capture) onResponse(res *http.Response) error {
 	ex, _ := res.Request.Context().Value(exchangeKey{}).(*exchange)
@@ -391,6 +417,7 @@ func (c *Capture) onResponse(res *http.Response) error {
 		return nil
 	}
 	ex.hasResponse = true
+	ex.emptyResponse = res.ContentLength == 0
 	ex.response = res
 	ex.status = res.StatusCode
 	ex.resHeader = res.Header.Clone()
@@ -663,8 +690,21 @@ func (c *Capture) countOmitted(reason string) {
 func (c *Capture) sanitizeExchange(ex *exchange) *traffic.Record {
 	var hits redact.Hits
 	engine := c.engine
+	grpcKind := grpcwire.ContentKind(ex.reqHeader.Get("Content-Type"))
+	sanitize := func(location redact.Location, seen bodyCapture, header http.Header, request bool) (traffic.Body, bool) {
+		if len(header.Values("Content-Type")) > 1 {
+			// grpc-go, for one, takes a call as gRPC if any value says so, whatever
+			// the first one says. Sanitizing by one reading could store another raw.
+			c.countOmitted(ReasonAmbiguousContentType)
+			return traffic.Body{State: traffic.BodyOmitted, Reason: ReasonAmbiguousContentType, ObservedBytes: seen.observed}, true
+		}
+		if grpcKind == grpcwire.KindNone {
+			return c.sanitizeBody(location, seen, header, &hits)
+		}
+		return c.sanitizeGRPCBody(location, seen, header, ex.path, request, grpcKind, &hits)
+	}
 
-	requestBody, requestFailed := c.sanitizeBody(redact.RequestBody, ex.reqBody, ex.reqHeader, &hits)
+	requestBody, requestFailed := sanitize(redact.RequestBody, ex.reqBody, ex.reqHeader, true)
 	rec := &traffic.Record{
 		SchemaVersion: traffic.SchemaVersion,
 		ID:            traffic.NewID(ex.start),
@@ -688,14 +728,27 @@ func (c *Capture) sanitizeExchange(ex *exchange) *traffic.Record {
 	}
 	complete := requestBody.State != traffic.BodyOmitted
 	replay := replayFromRequest(requestBody, requestFailed)
+	if grpcKind != grpcwire.KindNone {
+		rec.Protocol = traffic.ProtocolGRPC
+		rec.RPC = ex.path
+		if set := engine.Descriptors(); set != nil {
+			rec.Descriptor = &traffic.DescriptorRef{SetDigest: set.Digest()}
+		}
+	}
 
 	if ex.hasResponse {
-		responseBody, responseFailed := c.sanitizeBody(redact.ResponseBody, ex.resBody, ex.resHeader, &hits)
+		responseBody, responseFailed := sanitize(redact.ResponseBody, ex.resBody, ex.resHeader, false)
 		rec.Response = &traffic.Response{
 			StatusCode: ex.status,
 			Headers:    engine.Headers(redact.ResponseHeader, ex.resHeader, &hits),
 			Trailers:   engine.Headers(redact.ResponseTrailer, ex.resTrailer, &hits),
 			Body:       responseBody,
+		}
+		// HTTP and gRPC status are separate: a failed call normally still has HTTP 200.
+		if grpcKind != grpcwire.KindNone {
+			if code, ok := grpcwire.Status(ex.resHeader, ex.resTrailer, ex.emptyResponse); ok {
+				rec.Response.GRPCStatus = &code
+			}
 		}
 		if responseBody.State == traffic.BodyOmitted {
 			complete = false
@@ -739,6 +792,32 @@ func (c *Capture) sanitizeBody(location redact.Location, seen bodyCapture, heade
 		ContentType:     header.Get("Content-Type"),
 		ContentEncoding: strings.Join(header.Values("Content-Encoding"), ","),
 		Data:            seen.data,
+	}, hits)
+	if result.Body.State == traffic.BodyOmitted {
+		c.countOmitted(result.Body.Reason)
+	}
+	return result.Body, result.Failed
+}
+
+// sanitizeGRPCBody is sanitizeBody for a gRPC call, which is interpreted with the
+// engine's descriptor set rather than by media type.
+func (c *Capture) sanitizeGRPCBody(location redact.Location, seen bodyCapture, header http.Header, rpc string, request bool, kind grpcwire.Kind, hits *redact.Hits) (traffic.Body, bool) {
+	switch {
+	case seen.dropReason != "":
+		c.countOmitted(seen.dropReason)
+		return traffic.Body{State: traffic.BodyOmitted, Reason: seen.dropReason, ObservedBytes: seen.observed}, false
+	case !seen.eof:
+		c.countOmitted(ReasonIncomplete)
+		return traffic.Body{State: traffic.BodyTruncated, Reason: ReasonIncomplete, ObservedBytes: seen.observed}, false
+	case kind == grpcwire.KindOtherCodec:
+		c.countOmitted(ReasonGRPCUnsupportedCodec)
+		return traffic.Body{State: traffic.BodyOmitted, Reason: ReasonGRPCUnsupportedCodec, ObservedBytes: seen.observed}, true
+	}
+	result := c.engine.GRPCBody(location, redact.GRPCInput{
+		RPC:      rpc,
+		Request:  request,
+		Encoding: header.Get("Grpc-Encoding"),
+		Data:     seen.data,
 	}, hits)
 	if result.Body.State == traffic.BodyOmitted {
 		c.countOmitted(result.Body.Reason)

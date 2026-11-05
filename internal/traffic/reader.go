@@ -113,8 +113,11 @@ type Entry struct {
 	SessionKey string
 	Protocol   Protocol
 	Method     string
+	RPC        string
 	BodyState  BodyState
 	Replay     ReplayInfo
+	// DescriptorDigest identifies the schema a gRPC record was sanitized with.
+	DescriptorDigest string
 
 	segment int
 	offset  int64
@@ -589,17 +592,23 @@ func (s *scanner) readRecord(file io.ReaderAt, off int64, header frameHeader, se
 	if len(s.ds.Entries) >= s.maxRecords {
 		return ErrTooManyRecords
 	}
+	digest := ""
+	if rec.Descriptor != nil {
+		digest = rec.Descriptor.SetDigest
+	}
 	s.ds.Entries = append(s.ds.Entries, Entry{
-		Seq:        rec.Seq,
-		ID:         rec.ID,
-		SessionKey: rec.SessionKey,
-		Protocol:   rec.Protocol,
-		Method:     rec.Request.Method,
-		BodyState:  rec.Request.Body.State,
-		Replay:     rec.Replay,
-		segment:    segment,
-		offset:     off,
-		header:     header,
+		DescriptorDigest: digest,
+		Seq:              rec.Seq,
+		ID:               rec.ID,
+		SessionKey:       rec.SessionKey,
+		Protocol:         rec.Protocol,
+		Method:           rec.Request.Method,
+		RPC:              rec.RPC,
+		BodyState:        rec.Request.Body.State,
+		Replay:           rec.Replay,
+		segment:          segment,
+		offset:           off,
+		header:           header,
 	})
 	return nil
 }

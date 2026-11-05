@@ -22,6 +22,9 @@ Proxy traffic to an upstream service and store redacted recordings. Live traffic
 is forwarded even when recording fails. Final statistics are printed to stdout
 as JSON when the process stops.
 
+Unary gRPC calls are recorded only with --descriptor-set, which is what lets
+their messages be redacted. Without it, they're forwarded but not replayable.
+
 `
 
 func runCapture(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -43,6 +46,7 @@ func runCapture(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	keyFile := fs.String("tls-key", "", "private key for --tls-cert")
 	upstreamH2C := fs.Bool("upstream-h2c", false, "send to the upstream using HTTP/2 without TLS, with no fallback")
 	upstreamCA := fs.String("upstream-ca-file", "", "PEM certificates to trust for an https upstream, instead of the system roots")
+	descriptorPath := fs.String("descriptor-set", "", descriptorSetUsage)
 	fs.Var(&maxRequest, "max-request-body", "largest request body to record")
 	fs.Var(&maxResponse, "max-response-body", "largest response body to record")
 	fs.Var(&memoryBudget, "memory-budget", "bytes of body data to hold across all exchanges")
@@ -96,7 +100,11 @@ func runCapture(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		}
 		secret = []byte(value)
 	}
-	engine, err := redact.NewEngine(policy, redact.Options{SessionSecret: secret})
+	descriptors, err := loadDescriptors(*descriptorPath)
+	if err != nil {
+		return fail(stderr, "capture", err)
+	}
+	engine, err := newSanitizer(policy, redact.Options{SessionSecret: secret, Descriptors: descriptors})
 	if err != nil {
 		return fail(stderr, "capture", err)
 	}

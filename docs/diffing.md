@@ -17,7 +17,8 @@ For each record, in this order:
 1. **The call.** A failed baseline call means the record isn't compared, and the run's
    evidence is incomplete. A failed candidate call is a finding.
 2. **Status.** A changed class stops the comparison of that record, because the bodies are
-   no longer the same kind of response.
+   no longer the same kind of response. For gRPC, the gRPC status is compared next, as
+   described under [gRPC status](#grpc-status).
 3. **Media type**, ignoring parameters such as `charset`.
 4. **Headers** listed in `compare_headers`. Others aren't compared, because many vary by nature.
    Headers removed by sanitizing, such as `ETag` and `Content-Length`, are refused in the config,
@@ -44,14 +45,52 @@ characters are compared by their text, because exact comparison would be too exp
 Array elements are compared by position, up to the shortest length, and a different length
 is its own finding. Anything nested deeper than 64 levels is compared as a single value.
 
+## Protobuf
+
+gRPC responses are decoded with the run's `--descriptor-set` after redaction, and compared
+by field, following protobuf's own rules for presence. Paths use the field names in the
+schema, such as `$.customer.tier`.
+
+| Field | Rule | Example | Result |
+|---|---|---|---|
+| A message, `optional` field or `oneof` member | Present only when set | `shipment` unset | Breaking `field_removed` |
+| `oneof` | Each member is a field of its own | `card_last4` replaced by `invoice_id` | `field_removed` and `field_added` |
+| Any other scalar | Always present, holding its default when unset, because the wire format can't tell those apart | `tier: "gold"` unset | Warning `value_changed` |
+| Repeated | Like a JSON array | | |
+| Map | Entries are data, not fields, so keys become `[*]` in paths | Entry removed, added, changed | Warning `map_entry_removed`, info `map_entry_added`, warning `value_changed` at `$.labels[*]` |
+| Enum | By number, so an unknown number still compares | | |
+| 64-bit integer | Exactly | `9007199254740993`, `9007199254740992` | Different |
+| `bytes` | By value, shown as base64 | | |
+| `Any` of a type in the set | Unpacked and compared by field, at most 8 deep. Its packed type is its type, and an `Any` it packs is under `value`. | Another packed type | Breaking `type_changed` |
+| `Any` of another type | By a digest of its bytes, which are never shown | | `value_changed` at `.value` |
+| A field the set doesn't describe | By presence and wire type only, at a path such as `$['#99']` | | |
+
+A candidate message that can't be decoded is breaking `body_invalid`. When the baselines' can't
+be either, or no descriptor set was given, the record is uncertain `body_not_compared`. An OK
+reply must carry a message, so one without is breaking `body_removed`.
+
+### gRPC status
+
+| Baselines | Candidate | Finding |
+|---|---|---|
+| OK | Any error | Breaking `grpc_error_introduced` |
+| An error that isn't a server fault, such as `not_found` | A server fault | Breaking `grpc_error_introduced` |
+| Any | Any other new status | Warning `grpc_status_changed` |
+| Disagree | | Uncertain `baseline_status_unstable`, and `grpc_error_introduced` if the candidate's status is a server fault neither had |
+
+Server faults are `unknown`, `deadline_exceeded`, `resource_exhausted`, `unimplemented`,
+`internal`, `unavailable`, `data_loss`, any code this build doesn't know, and a call that
+ended with no status. Messages are compared only when all three calls returned OK, because a
+client discards any message that comes with an error.
+
 ## Severity
 
 | Severity | Meaning | Kinds |
 |---|---|---|
-| Breaking | The contract changed | `status_class_changed`, `field_removed`, `type_changed`, `candidate_call_failed`, `body_removed`, `body_invalid`, `body_type_changed` |
-| Warning | Behavior changed, possibly on purpose | `value_changed`, `value_changed_beyond_noise`, `array_length_changed`, `status_changed`, `content_type_changed`, `latency_regression`, `error_rate_regression` |
+| Breaking | The contract changed | `status_class_changed`, `grpc_error_introduced`, `field_removed`, `type_changed`, `candidate_call_failed`, `body_removed`, `body_invalid`, `body_type_changed` |
+| Warning | Behavior changed, possibly on purpose | `value_changed`, `value_changed_beyond_noise`, `array_length_changed`, `map_entry_removed`, `status_changed`, `grpc_status_changed`, `content_type_changed`, `latency_regression`, `error_rate_regression` |
 | Uncertain | The evidence can't support a conclusion. **This isn't a pass.** | `insufficient_baseline_evidence`, `baseline_presence_unstable`, `baseline_type_unstable`, `baseline_status_unstable`, `baseline_content_type_unstable`, `baseline_body_unstable`, `body_not_compared`, `field_limit_reached`, `route_limit_reached` |
-| Info | A permitted difference, or noise that was explained | `field_added`, `body_added`, `number_format_changed`, `noise_explained` |
+| Info | A permitted difference, or noise that was explained | `field_added`, `map_entry_added`, `body_added`, `number_format_changed`, `noise_explained` |
 
 ## Noise
 
@@ -94,6 +133,9 @@ where `*` matches one segment, a trailing `**` any remainder, and a method of `*
 Otherwise, a path segment containing a digit is treated as an ID, unless it looks like a version
 such as `v1`. This is a heuristic: an ID with no digits becomes its own route, and gets fewer
 observations. Add a pattern to group those.
+
+A gRPC route is its method, such as `POST /fixture.orders.v1.OrderService/GetOrder`. The ID
+heuristic doesn't apply to it, since a method path holds no IDs.
 
 ## Rules
 
@@ -141,7 +183,8 @@ replaced at random beyond that.
 
 ## Error rate
 
-Errors are 5xx responses and failed calls. A route has a regression when the candidate's rate exceeds
+Errors are 5xx responses and failed calls, and for gRPC, server faults as listed under
+[gRPC status](#grpc-status). A route has a regression when the candidate's rate exceeds
 the baselines' by more than `max_increase_points` percentage points, with at least `min_requests`
 records.
 
@@ -168,5 +211,4 @@ Reaching a limit never hides anything silently:
   each time, that shows as `value_changed`. Add an ignore rule for fields like these.
 - Secret-like values the redaction policy doesn't cover can appear in evidence. Use `evidence: types`
   if that's a concern, and see [redaction limits](redaction.md#known-limits).
-- Object keys appear in field paths and aren't redacted.
-- Protobuf comparison is planned.
+- Object keys appear in field paths and aren't redacted. So do protobuf map keys, in evidence.

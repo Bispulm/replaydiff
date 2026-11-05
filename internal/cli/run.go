@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/Bispulm/replaydiff/internal/diff"
+	"github.com/Bispulm/replaydiff/internal/protoset"
 	"github.com/Bispulm/replaydiff/internal/redact"
 	"github.com/Bispulm/replaydiff/internal/replay"
 	"github.com/Bispulm/replaydiff/internal/report"
@@ -27,11 +28,22 @@ Replay eligible records against both baselines and the candidate, and compare th
 responses. Only GET, HEAD and OPTIONS are eligible unless --allow-method says
 otherwise. replaydiff makes one attempt per target, and redirects aren't followed.
 
+A gRPC call is eligible only when --allow-rpc names its method, with the
+--descriptor-set it was recorded with. Allowing POST never makes gRPC eligible.
+
 Exit codes:
   0  the replay finished with complete evidence, whatever the findings were
   2  invalid configuration, execution failure, or incomplete evidence
 
 `
+
+// digestOf names the schema a run used, so a report shows which one it was.
+func digestOf(set *protoset.Set) string {
+	if set == nil {
+		return ""
+	}
+	return set.Digest()
+}
 
 type stringList []string
 
@@ -43,7 +55,7 @@ func (l *stringList) Set(value string) error {
 }
 
 func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	var origins, methods, credentials stringList
+	var origins, methods, rpcs, credentials stringList
 	maxResponse := byteSize(replay.DefaultMaxResponseBytes)
 	var cfg replay.Config
 
@@ -59,6 +71,8 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	maxRecords := fs.Int("max-records", traffic.DefaultMaxRecords, "fail if the dataset holds more records than this")
 	fs.Var(&origins, "allow-origin", "origin replay may send to; every target must be listed (required, repeatable)")
 	fs.Var(&methods, "allow-method", "method to replay besides GET, HEAD and OPTIONS; this repeats its side effects (repeatable)")
+	fs.Var(&rpcs, "allow-rpc", "unary gRPC method to replay, such as /pkg.Service/Method; this repeats its side effects (repeatable)")
+	descriptorPath := fs.String("descriptor-set", "", descriptorSetUsage)
 	fs.Var(&credentials, "target-credential", "ROLE:Header=ENV_VAR sets a header on one target from an environment variable (repeatable)")
 	fs.Float64Var(&cfg.RecordsPerSecond, "rps", 50, "logical records started per second, each making three calls")
 	fs.Float64Var(&cfg.TargetCallsPerSecond, "target-rps", 0, "calls per second to each target; 0 means no limit")
@@ -96,6 +110,7 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	cfg.Candidate = replay.TargetConfig{URL: *candidate}
 	cfg.AllowedOrigins = origins
 	cfg.AllowMethods = methods
+	cfg.AllowRPCs = rpcs
 	cfg.MaxResponseBytes = int64(maxResponse)
 	credentialHeaders, err := applyCredentials(&cfg, credentials)
 	if err != nil {
@@ -110,7 +125,12 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, "run", err)
 	}
-	sanitizer, err := redact.NewEngine(policy, redact.Options{})
+	descriptors, err := loadDescriptors(*descriptorPath)
+	if err != nil {
+		return fail(stderr, "run", err)
+	}
+	cfg.Descriptors = descriptors
+	sanitizer, err := newSanitizer(policy, redact.Options{Descriptors: descriptors})
 	if err != nil {
 		return fail(stderr, "run", err)
 	}
@@ -158,6 +178,8 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			Targets:              map[string]string{"baseline-a": *baselineA, "baseline-b": *baselineB, "candidate": *candidate},
 			CredentialHeaders:    credentialHeaders,
 			AllowMethods:         methods,
+			AllowRPCs:            rpcs,
+			DescriptorDigest:     digestOf(descriptors),
 			RecordsPerSecond:     cfg.RecordsPerSecond,
 			TargetCallsPerSecond: cfg.TargetCallsPerSecond,
 			Concurrency:          cfg.Concurrency,
@@ -266,6 +288,7 @@ func (s *sampleSet) add(result *replay.RecordResult) {
 	for i := range result.Calls {
 		result.Calls[i].Body = nil
 		result.Calls[i].Header = nil
+		result.Calls[i].Trailer = nil
 	}
 	s.items = slices.Insert(s.items, position, result)
 	if len(s.items) > s.limit {

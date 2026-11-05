@@ -17,6 +17,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/Bispulm/replaydiff/internal/protoset"
 )
 
 // Defaults for zero Config values.
@@ -72,6 +74,13 @@ type Config struct {
 	// TLS configures https:// targets, such as a private CA. HTTP/2 is negotiated
 	// through ALPN when a target offers it.
 	TLS *tls.Config
+	// AllowRPCs lists gRPC methods that may be replayed, such as
+	// /package.Service/Method. gRPC uses POST whatever a method does, so the method
+	// can't say whether replaying is safe, and only this list can.
+	AllowRPCs []string
+	// Descriptors is the schema recordings were sanitized with. Records made with
+	// another one are skipped. It is required when AllowRPCs is set.
+	Descriptors *protoset.Set
 }
 
 func (c Config) withDefaults() Config {

@@ -3,7 +3,6 @@ package redact
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -55,15 +54,6 @@ func TestParsePolicyRejectsInvalidRules(t *testing.T) {
 				t.Fatal("want error")
 			}
 		})
-	}
-}
-
-// Protobuf rules can't be honored until descriptor support exists. Accepting
-// them now would claim protection that isn't there.
-func TestParsePolicyRefusesProtoFieldsUntilSupported(t *testing.T) {
-	_, err := ParsePolicy([]byte(`proto_fields: ["orders.v1.Customer.email"]`))
-	if err == nil || !strings.Contains(err.Error(), "proto_fields") {
-		t.Fatalf("err = %v", err)
 	}
 }
 
