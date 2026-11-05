@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -328,4 +331,43 @@ func TestDecisionEncodesForTheJSONOutput(t *testing.T) {
 	if out.Schema != GateSchema || out.Decision.Verdict != "regression" || out.Decision.ExitCode != 1 || out.Run.Schema != Schema || out.Decision.Findings[0].Disposition != "failed" {
 		t.Fatalf("out = %+v", out)
 	}
+}
+
+// The report file is input the gate can't trust. Whatever it holds, the gate must reach a
+// verdict rather than panic, and an all-empty document must not be a pass.
+func FuzzEvaluateAndRender(f *testing.F) {
+	valid, err := json.Marshal(withFindings(breaking(), uncertain()))
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(valid)
+	f.Add([]byte(`{"schema":"replaydiff.run/v1"}`))
+	f.Add([]byte(`{"schema":"replaydiff.run/v1","summary":{"targets":{"candidate":null}}}`))
+	f.Add([]byte(`{"schema":"replaydiff.run/v1","summary":{"targets":{}},"comparison":{"findings":[{"severity":"info","kind":"nope"}],"counts":{"breaking":-1}}}`))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		path := filepath.Join(t.TempDir(), "run.json")
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		run, err := Load(path)
+		if err != nil {
+			return
+		}
+		policy, err := ParsePolicy(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decision := Evaluate(run, policy)
+		if decision.Verdict == VerdictPass && (run.Summary == nil || run.Comparison == nil) {
+			t.Fatalf("passed without evidence: %s", data)
+		}
+		if _, err := JUnit(run, decision); err != nil {
+			t.Fatal(err)
+		}
+		_ = Markdown(run, decision)
+		Text(io.Discard, run, decision)
+		if _, err := JSON(run, decision); err != nil {
+			t.Fatal(err)
+		}
+	})
 }

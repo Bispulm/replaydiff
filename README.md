@@ -84,8 +84,8 @@ policy, waivers and a GitHub Actions example.
   uncertain, not as a pass. See [comparison](docs/diffing.md) for how this works and what it
   can't catch.
 - **Incomplete evidence can't pass.** That includes zero eligible records, a damaged dataset, a
-  failed baseline, an interrupted run, and an edited report claiming otherwise. A pass only speaks
-  for the traffic that was replayed.
+  failed baseline, an interrupted run, and a report whose figures disagree. Reports aren't signed, so
+  this doesn't stop deliberate forgery. A pass only speaks for the traffic that was replayed.
 
 ## Documentation
 
