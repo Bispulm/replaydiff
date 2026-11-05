@@ -355,7 +355,9 @@ func (r *Results) Markdown() string {
 		row(fmt.Sprintf("Round %d direct", i+1), round.Direct)
 		row(fmt.Sprintf("Round %d proxied", i+1), round.Proxied)
 	}
-	row("Drops run, proxied", r.Drops.Phase)
+	if ran("drops") {
+		row("Drops run, proxied", r.Drops.Phase)
+	}
 	for _, step := range r.Steps {
 		row(fmt.Sprintf("Step %.0f/s direct", step.Proxied.Offered), step.Direct)
 		row(fmt.Sprintf("Step %.0f/s proxied, %d dropped", step.Proxied.Offered, step.Capture.DroppedTotal()), step.Proxied)
