@@ -1,0 +1,8 @@
+# Redaction policy for the demo. See docs/redaction.md.
+query_params: [token]
+json_paths:
+  - "$.customer.email"
+  - "$.access_token"
+  - "$.password"
+session:
+  sources: ["cookie:sid"]
