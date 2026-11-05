@@ -230,6 +230,11 @@ func (r *Record) Validate() error {
 	if r.RPC != "" && (len(r.RPC) > MaxPathBytes || !strings.HasPrefix(r.RPC, "/") || hasControl(r.RPC) || strings.ContainsRune(r.RPC, ' ')) {
 		return invalid("rpc")
 	}
+	// Only a gRPC record has one, and it is the path: replay checks the RPC against its
+	// allowlist, so it must be what gets sent.
+	if (r.Protocol == ProtocolGRPC) != (r.RPC != "") || (r.RPC != "" && r.RPC != r.Request.Path) {
+		return invalid("rpc")
+	}
 	if r.Descriptor != nil && (len(r.Descriptor.SetDigest) > MaxSessionKeyBytes || !isHex(r.Descriptor.SetDigest)) {
 		return invalid("descriptor")
 	}
