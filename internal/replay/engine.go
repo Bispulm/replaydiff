@@ -681,11 +681,37 @@ var droppedHeaders = map[string]bool{
 	"X-Real-Ip":            true,
 }
 
+// plainContentType refuses what a server could take as a gRPC call, in a record that says
+// it isn't one. A gRPC server accepts any application/grpc type, and grpc-go does so even
+// when another Content-Type comes first, so either would bypass the RPC allowlist.
+func plainContentType(headers map[string][]string) error {
+	var values []string
+	for name, v := range headers {
+		if http.CanonicalHeaderKey(name) == "Content-Type" {
+			values = append(values, v...)
+		}
+	}
+	if len(values) > 1 {
+		return errors.New("replay: the record has more than one Content-Type")
+	}
+	for _, value := range values {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(value)), "application/grpc") {
+			return errors.New("replay: a record that isn't gRPC has a gRPC Content-Type")
+		}
+	}
+	return nil
+}
+
 // buildRequest assembles a call from the target's origin and the record's path
 // and query. The URL is set field by field rather than parsed from a joined
 // string, so no record content can change the scheme or host.
 func buildRequest(ctx context.Context, t *target, rec *traffic.Record, timeout time.Duration) (*http.Request, error) {
 	grpcCall := rec.Protocol == traffic.ProtocolGRPC
+	if !grpcCall {
+		if err := plainContentType(rec.Request.Headers); err != nil {
+			return nil, err
+		}
+	}
 	var body io.Reader = http.NoBody
 	switch {
 	case grpcCall:

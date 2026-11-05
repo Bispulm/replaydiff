@@ -44,6 +44,7 @@ Having been captured doesn't make a request safe to replay.
 | Claims to be eligible but has no stored body | Skipped | `request_body_unavailable` |
 | gRPC method not listed in `--allow-rpc` | Skipped, even if POST is allowed | `grpc_method_not_allowed` |
 | gRPC, recorded with another descriptor set | Skipped | `descriptor_mismatch` |
+| Not gRPC, but with a gRPC `Content-Type` or more than one `Content-Type` | Not sent, as an `invalid_request`, which makes evidence incomplete | |
 
 `--allow-method POST` repeats side effects on all three targets. Use it only against
 disposable environments.

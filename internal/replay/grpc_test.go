@@ -249,3 +249,35 @@ func TestGRPCConfigurationIsValidated(t *testing.T) {
 		})
 	}
 }
+
+// Allowing POST must never reach a gRPC method. A record that says it's plain HTTP but
+// carries a gRPC content type would be taken as gRPC by the server, so it isn't sent.
+func TestHTTPRecordsWithAGRPCContentTypeAreNotSent(t *testing.T) {
+	for name, contentType := range map[string][]string{
+		"grpc alone":    {"application/grpc"},
+		"grpc second":   {"application/x-www-form-urlencoded", "application/grpc"},
+		"grpc codec":    {"application/grpc+json"},
+		"two of a kind": {"application/json", "text/plain"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, _, _, cfg := grpcCluster(t)
+			cfg.AllowMethods = []string{http.MethodPost}
+			record := spec{
+				method:   http.MethodPost,
+				path:     rpcCreateOrder,
+				protocol: traffic.ProtocolHTTP2,
+				headers:  map[string][]string{"Content-Type": contentType},
+				body:     traffic.Body{State: traffic.BodyPresent, Data: []byte{0, 0, 0, 0, 0}},
+			}
+			_, results := mustRun(t, mustEngine(t, cfg), scan(t, writeDataset(t, []spec{record})))
+			for _, call := range results[0].Calls {
+				if call.Outcome != CallInvalidRequest {
+					t.Errorf("%s: outcome %s", call.Role, call.Outcome)
+				}
+			}
+			if n := a.service.Stats().Mutations; n != 0 {
+				t.Fatalf("a mutating RPC ran %d time(s)", n)
+			}
+		})
+	}
+}
