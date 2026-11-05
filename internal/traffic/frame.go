@@ -161,6 +161,10 @@ type footer struct {
 	// Final is true on the last segment of a run that shut down cleanly. Its
 	// absence is how a reader detects that a run's tail is missing.
 	Final bool `json:"final"`
+	// Drops counts exchanges the capture process didn't record, by reason. It
+	// is written with the final segment, so a reader knows the recording is
+	// missing traffic even when every stored record is intact.
+	Drops map[string]int64 `json:"drops,omitempty"`
 }
 
 func footerFrame(f footer) (Frame, error) {

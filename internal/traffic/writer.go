@@ -127,7 +127,7 @@ func (w *Writer) Append(frame Frame) error {
 	if w.file != nil && w.offset >= w.maxBytes {
 		// A failed seal doesn't lose the record being appended. The old
 		// segment stays unsealed, which readers report.
-		_ = w.seal(false)
+		_ = w.seal(footer{})
 	}
 	if w.file == nil {
 		if err := w.openSegment(); err != nil {
@@ -151,22 +151,27 @@ func (w *Writer) Sync() error {
 
 // Close seals the current segment and marks it as the end of the run. A run
 // that wrote nothing leaves no files.
-func (w *Writer) Close() error {
+func (w *Writer) Close() error { return w.CloseWithDrops(nil) }
+
+// CloseWithDrops is Close, also recording how many exchanges the capture
+// process dropped, by reason. If anything was dropped, a segment is written
+// even for a run with no records, so the loss stays visible.
+func (w *Writer) CloseWithDrops(drops map[string]int64) error {
 	if w.closed {
 		return nil
 	}
 	w.closed = true
 	if w.file == nil {
-		if !w.started {
+		if !w.started && len(drops) == 0 {
 			return nil
 		}
-		// The previous segment was rotated or abandoned, so an empty segment
-		// carries the end-of-run marker.
+		// The previous segment was rotated or abandoned, or nothing was
+		// written, so an empty segment carries the end-of-run marker.
 		if err := w.openSegment(); err != nil {
 			return err
 		}
 	}
-	return w.seal(true)
+	return w.seal(footer{Final: true, Drops: drops})
 }
 
 func (w *Writer) openSegment() error {
@@ -237,8 +242,9 @@ func (w *Writer) abandon() {
 	w.file = nil
 }
 
-func (w *Writer) seal(final bool) error {
-	frame, err := footerFrame(footer{RecordCount: w.count, Final: final})
+func (w *Writer) seal(f footer) error {
+	f.RecordCount = w.count
+	frame, err := footerFrame(f)
 	if err != nil {
 		w.abandon()
 		return err
