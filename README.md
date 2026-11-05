@@ -17,7 +17,7 @@ generated IDs.
 | JSON comparison, noise handling, latency and error-rate checks | Implemented and tested |
 | Protobuf redaction and comparison, from a descriptor set | Implemented and tested |
 | CI gate with a policy, JSON, JUnit and Markdown reports | Implemented and tested, including in this repository's CI |
-| Helm sidecar, metrics, traces | Planned |
+| Helm sidecar chart, Prometheus metrics, OpenTelemetry traces, Grafana dashboard | Implemented and tested, including on kind |
 | Overhead and throughput benchmarks | Planned. No performance numbers are claimed yet. |
 
 ## Try it
@@ -93,6 +93,8 @@ policy, waivers and a GitHub Actions example.
 - [Redaction](docs/redaction.md)
 - [Replay](docs/replay.md)
 - [Protocols](docs/protocols.md)
+- [Deployment](docs/deployment.md)
+- [Observability](docs/observability.md)
 - [Comparison](docs/diffing.md)
 - [CI gate](docs/ci.md)
 - [Fixtures](docs/fixtures.md)
