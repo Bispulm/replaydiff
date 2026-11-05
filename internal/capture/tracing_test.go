@@ -46,7 +46,8 @@ func TestCaptureTracesEachExchangeWithoutChangingIt(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
-	h.send(http.MethodGet, "/orders/"+secret+"?token="+secret, nil, map[string]string{"Traceparent": clientTraceCtx, "X-Note": secret})
+	// tracestate is the client's own vendor data, so capture doesn't carry it into its span.
+	h.send(http.MethodGet, "/orders/"+secret+"?token="+secret, nil, map[string]string{"Traceparent": clientTraceCtx, "Tracestate": "vendor=" + secret, "X-Note": secret})
 	h.close()
 	if forwarded != clientTraceCtx {
 		t.Fatalf("upstream saw traceparent %q", forwarded)
