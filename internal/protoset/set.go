@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 // ErrUnknownMethod means an RPC isn't described by the set.
@@ -27,6 +28,7 @@ type MethodDescriptor = protoreflect.MethodDescriptor
 // Set is a loaded descriptor set. It is safe for concurrent use.
 type Set struct {
 	files  *protoregistry.Files
+	types  *dynamicpb.Types
 	digest string
 }
 
@@ -54,8 +56,11 @@ func Parse(data []byte) (*Set, error) {
 		return nil, fmt.Errorf("parse descriptor set: %w (was it built with --include_imports?)", err)
 	}
 	sum := sha256.Sum256(data)
-	return &Set{files: resolved, digest: hex.EncodeToString(sum[:16])}, nil
+	return &Set{files: resolved, types: dynamicpb.NewTypes(resolved), digest: hex.EncodeToString(sum[:16])}, nil
 }
+
+// Types resolves message types by name and URL, for encoders that need one.
+func (s *Set) Types() *dynamicpb.Types { return s.types }
 
 // Digest identifies the set's content. Records store it, so that a recording can be
 // matched with the schema that sanitized it.
