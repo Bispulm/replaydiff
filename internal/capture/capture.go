@@ -419,7 +419,11 @@ func (c *Capture) finish(ex *exchange, r *http.Request, aborted bool) {
 	}
 	if ex.resTap != nil {
 		ex.resBody = ex.resTap.seal()
-		ex.resTrailer = ex.response.Trailer.Clone()
+		// Trailers follow a complete body. Otherwise, as with the request above, the
+		// transport may still own this map.
+		if ex.resBody.eof {
+			ex.resTrailer = ex.response.Trailer.Clone()
+		}
 	}
 	ex.outcome = classifyOutcome(ex, r, aborted)
 	if ex.upgraded {
