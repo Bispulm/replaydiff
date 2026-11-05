@@ -95,6 +95,8 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.IntVar(&cfg.MaxActiveSessions, "max-active-sessions", replay.DefaultMaxActiveSessions, "sessions worked on at once")
 	fs.DurationVar(&cfg.Timeout, "timeout", replay.DefaultTimeout, "time allowed for one call")
 	fs.Var(&maxResponse, "max-response-body", "largest response body to hold")
+	fs.BoolVar(&cfg.H2C, "target-h2c", false, "use HTTP/2 without TLS for all targets, with no fallback; for development")
+	targetCA := fs.String("target-ca-file", "", "PEM certificates to trust for https targets, instead of the system roots")
 	fs.Usage = func() {
 		fmt.Fprint(stderr, runUsage)
 		fs.PrintDefaults()
@@ -124,6 +126,10 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	cfg.AllowMethods = methods
 	cfg.MaxResponseBytes = int64(maxResponse)
 	credentialHeaders, err := applyCredentials(&cfg, credentials)
+	if err != nil {
+		return fail(stderr, "run", err)
+	}
+	cfg.TLS, err = loadCAFile("target-ca-file", *targetCA)
 	if err != nil {
 		return fail(stderr, "run", err)
 	}
@@ -176,6 +182,11 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "report: %s\n", *reportPath)
 	for _, reason := range sortedKeys(summary.CaptureDrops) {
 		fmt.Fprintf(stderr, "warning: capture dropped %d exchange(s): %s\n", summary.CaptureDrops[reason], reason)
+	}
+	for _, role := range sortedKeys(summary.Targets) {
+		if n := summary.Targets[role].Resends; n > 0 {
+			fmt.Fprintf(stderr, "warning: %s: the HTTP client resent %d request(s) the server said it hadn't processed\n", role, n)
+		}
 	}
 	if !report.EvidenceComplete {
 		for _, problem := range report.Problems {

@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
@@ -8,7 +10,9 @@ import (
 	"log"
 	"log/slog"
 	"math"
+	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -110,3 +114,42 @@ func serverErrorLog(logger *slog.Logger) *log.Logger {
 type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// loadCAFile reads PEM certificates into a client TLS config. An empty path
+// returns nil, which means the system's trusted roots.
+func loadCAFile(flagName, path string) (*tls.Config, error) {
+	if path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // The path is the operator's own flag.
+	if err != nil {
+		return nil, fmt.Errorf("--%s: %w", flagName, err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(data) {
+		return nil, fmt.Errorf("--%s: no PEM certificates found", flagName)
+	}
+	return &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}, nil
+}
+
+// listenerProtocols validates how the proxy accepts connections and returns the
+// protocols to serve. Cleartext HTTP/2 is opt-in, since it only suits development.
+func listenerProtocols(h2c bool, certFile, keyFile string) (*http.Protocols, error) {
+	switch {
+	case certFile != "" && keyFile == "":
+		return nil, errors.New("--tls-cert needs --tls-key")
+	case keyFile != "" && certFile == "":
+		return nil, errors.New("--tls-key needs --tls-cert")
+	case h2c && certFile != "":
+		return nil, errors.New("--h2c is cleartext and can't be combined with --tls-cert; TLS negotiates HTTP/2 by itself")
+	}
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	switch {
+	case h2c:
+		protocols.SetUnencryptedHTTP2(true)
+	case certFile != "":
+		protocols.SetHTTP2(true)
+	}
+	return protocols, nil
+}

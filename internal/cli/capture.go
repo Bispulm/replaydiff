@@ -38,6 +38,11 @@ func runCapture(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	secretEnv := fs.String("session-secret-env", "", "environment variable holding the session digest key; unset means a random key per process")
 	logLevel := fs.String("log-level", "info", "debug, info, warn or error")
 	shutdown := fs.Duration("shutdown-timeout", 10*time.Second, "time allowed for live requests to finish, and then again for queued records to drain")
+	h2c := fs.Bool("h2c", false, "also accept HTTP/2 without TLS; for development")
+	certFile := fs.String("tls-cert", "", "serve TLS with this certificate, negotiating HTTP/2")
+	keyFile := fs.String("tls-key", "", "private key for --tls-cert")
+	upstreamH2C := fs.Bool("upstream-h2c", false, "send to the upstream using HTTP/2 without TLS, with no fallback")
+	upstreamCA := fs.String("upstream-ca-file", "", "PEM certificates to trust for an https upstream, instead of the system roots")
 	fs.Var(&maxRequest, "max-request-body", "largest request body to record")
 	fs.Var(&maxResponse, "max-response-body", "largest response body to record")
 	fs.Var(&memoryBudget, "memory-budget", "bytes of body data to hold across all exchanges")
@@ -71,6 +76,14 @@ func runCapture(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	if err != nil {
 		return fail(stderr, "capture", err)
 	}
+	protocols, err := listenerProtocols(*h2c, *certFile, *keyFile)
+	if err != nil {
+		return fail(stderr, "capture", err)
+	}
+	upstreamTLS, err := loadCAFile("upstream-ca-file", *upstreamCA)
+	if err != nil {
+		return fail(stderr, "capture", err)
+	}
 	policy, err := redact.LoadPolicy(*policyPath)
 	if err != nil {
 		return fail(stderr, "capture", err)
@@ -92,7 +105,15 @@ func runCapture(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	limits.MaxRequestBodyBytes = int64(maxRequest)
 	limits.MaxResponseBodyBytes = int64(maxResponse)
 	limits.MemoryBudgetBytes = int64(memoryBudget)
-	recorder, err := capture.New(capture.Config{Upstream: target, Dir: *out, Engine: engine, Limits: limits, Logger: logger})
+	recorder, err := capture.New(capture.Config{
+		Upstream:    target,
+		UpstreamH2C: *upstreamH2C,
+		UpstreamTLS: upstreamTLS,
+		Dir:         *out,
+		Engine:      engine,
+		Limits:      limits,
+		Logger:      logger,
+	})
 	if err != nil {
 		return fail(stderr, "capture", err)
 	}
@@ -106,12 +127,19 @@ func runCapture(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	}
 	server := &http.Server{
 		Handler:           recorder,
+		Protocols:         protocols,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		ErrorLog:          serverErrorLog(logger),
 	}
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- server.Serve(listener) }()
+	go func() {
+		if *certFile != "" {
+			serveErr <- server.ServeTLS(listener, *certFile, *keyFile)
+			return
+		}
+		serveErr <- server.Serve(listener)
+	}()
 	logger.Info("capture listening", "addr", listener.Addr().String())
 
 	var failure error
