@@ -53,8 +53,11 @@ yet. Benchmarks are planned.
 ### Shutdown
 
 1. The HTTP server stops accepting and waits for live requests, up to a deadline.
-2. Recording stops accepting, and workers drain the queue, up to a deadline.
-3. The final segment is sealed with its record count and drop totals.
+2. Capture waits for any request it is still serving, up to a deadline. This matters
+   because an HTTP/2 server can finish shutting down while the handler for a stream the
+   client reset is still running.
+3. Recording stops accepting, and workers drain the queue, up to a deadline.
+4. The final segment is sealed with its record count and drop totals.
 
 If a write is stuck in the OS when the deadline passes, `Close` returns and the process
 exits non-zero. A goroutine blocked in that write can't be interrupted, and it exits
