@@ -40,8 +40,8 @@ Commands:
   help      Print this message
 
 Exit codes:
-  0  completed and met the configured policy
-  1  a regression exceeded the configured policy
+  0  completed, and for report, the evidence is complete and the policy is met
+  1  report found a regression that fails the policy
   2  invalid configuration, execution failure, or incomplete evidence
 `
 

@@ -95,7 +95,7 @@ set +e
 "$bin/replaydiff" report "$work/report.json"
 code=$?
 set -e
-echo "report exit code: $code (2 until a CI policy exists)"
+echo "report exit code: $code (1 means a regression failed the policy)"
 
 echo
 echo "== Refusing a target that isn't on the allowlist"
