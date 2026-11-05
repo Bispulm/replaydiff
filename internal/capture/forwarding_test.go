@@ -386,3 +386,23 @@ func paths(records []*traffic.Record) []string {
 	}
 	return out
 }
+
+// Trailers follow a complete body. After an abort the response is in an unknown state,
+// and the transport may still own its trailer map.
+func TestAbortedResponseRecordsNoTrailers(t *testing.T) {
+	h := newHarness(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Trailer", "X-Checksum")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"partial":`)
+		http.NewResponseController(w).Flush() //nolint:errcheck // httptest writers support Flush.
+		w.Header().Set("X-Checksum", "abc")
+		panic(http.ErrAbortHandler)
+	}))
+	if got := h.send(http.MethodGet, "/", nil, nil); got.readErr == nil {
+		t.Fatal("client must see the broken response")
+	}
+	rec := h.onlyRecord()
+	if rec.Outcome.Transport != traffic.TransportUpstreamAbort || len(rec.Response.Trailers) != 0 {
+		t.Fatalf("record = %+v", rec.Response)
+	}
+}

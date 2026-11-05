@@ -49,7 +49,7 @@ func (s *slice) runArgs(report string, extra ...string) []string {
 		"run", "--traffic", s.trafficDir, "--report", report,
 		"--baseline-a", s.aURL, "--baseline-b", s.bURL, "--candidate", s.cURL,
 		"--allow-origin", s.aURL, "--allow-origin", s.bURL, "--allow-origin", s.cURL,
-		"--rps", "0", "--max-samples", "1000",
+		"--redact", s.policy, "--rps", "0", "--max-samples", "1000",
 	}
 	return append(args, extra...)
 }
@@ -262,7 +262,7 @@ func TestUnlistedTargetRefusesToStartAndSendsNothing(t *testing.T) {
 	captureOne(t, s)
 	report := filepath.Join(s.work, "report.json")
 	got := runCommand(t, nil, "replaydiff", "run", "--traffic", s.trafficDir, "--report", report,
-		"--baseline-a", s.aURL, "--baseline-b", s.bURL, "--candidate", s.cURL,
+		"--redact", s.policy, "--baseline-a", s.aURL, "--baseline-b", s.bURL, "--candidate", s.cURL,
 		"--allow-origin", s.aURL, "--allow-origin", s.bURL)
 	if got.code != 2 || !strings.Contains(string(got.stderr), "allowlist") {
 		t.Fatalf("exit %d: %s", got.code, got.stderr)
