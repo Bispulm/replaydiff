@@ -59,7 +59,7 @@ func (b *syncBuffer) String() string {
 }
 
 type harness struct {
-	t        *testing.T
+	t        testing.TB
 	dir      string
 	logs     *syncBuffer
 	upstream *httptest.Server
@@ -68,7 +68,7 @@ type harness struct {
 	closed   bool
 }
 
-func newHarness(t *testing.T, upstream http.Handler, adjust ...func(*Config)) *harness {
+func newHarness(t testing.TB, upstream http.Handler, adjust ...func(*Config)) *harness {
 	t.Helper()
 	policy, err := redact.ParsePolicy([]byte(testPolicy))
 	if err != nil {

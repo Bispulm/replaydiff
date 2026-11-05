@@ -44,3 +44,26 @@ image:
 .PHONY: kind-test
 kind-test:
 	REPLAYDIFF_KIND=1 REPLAYDIFF_KIND_KEEP=$(KEEP) go test -count=1 -timeout 30m -v ./test/kind/
+
+# Go benchmarks of proxying, redaction, encoding and comparison, with allocations.
+.PHONY: bench
+bench:
+	go test -run '^$$' -bench . -benchmem -count 5 ./internal/...
+
+# Measures capture and replay against the targets in docs/benchmarks.md. Takes about ten
+# minutes and loads the machine, so run it with nothing else heavy going on.
+.PHONY: bench-harness
+bench-harness: build
+	bin/replaydiff-bench --capture bin/replaydiff --out .bench
+
+# Builds release archives and checksums into dist/ without publishing anything.
+.PHONY: snapshot
+snapshot:
+	goreleaser release --snapshot --clean
+
+# The local stack in compose.yaml. See docs/deployment.md#compose.
+.PHONY: compose-up compose-down
+compose-up:
+	docker compose up --build --detach
+compose-down:
+	docker compose down --volumes
