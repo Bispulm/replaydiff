@@ -266,6 +266,7 @@ func (s *sampleSet) add(result *replay.RecordResult) {
 	for i := range result.Calls {
 		result.Calls[i].Body = nil
 		result.Calls[i].Header = nil
+		result.Calls[i].Trailer = nil
 	}
 	s.items = slices.Insert(s.items, position, result)
 	if len(s.items) > s.limit {

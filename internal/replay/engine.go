@@ -18,6 +18,8 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/Bispulm/replaydiff/internal/grpcwire"
+	"github.com/Bispulm/replaydiff/internal/protoset"
 	"github.com/Bispulm/replaydiff/internal/redact"
 	"github.com/Bispulm/replaydiff/internal/traffic"
 )
@@ -54,10 +56,11 @@ const (
 // Reasons a record wasn't replayed. A record that capture marked as unreplayable
 // is counted under the reason capture recorded.
 const (
-	SkipMutating            = "mutating_method"
-	SkipBodyUnavailable     = "request_body_unavailable"
-	SkipUnsupportedProtocol = "unsupported_protocol"
-	SkipNotReplayable       = "not_replayable"
+	SkipMutating           = "mutating_method"
+	SkipBodyUnavailable    = "request_body_unavailable"
+	SkipRPCNotAllowed      = "grpc_method_not_allowed"
+	SkipDescriptorMismatch = "descriptor_mismatch"
+	SkipNotReplayable      = "not_replayable"
 )
 
 // CallResult is what one target did with one record.
@@ -71,10 +74,14 @@ type CallResult struct {
 	Proto string `json:"proto,omitempty"`
 	// Attempts counts how many times the request was written to the target.
 	Attempts int `json:"attempts"`
+	// GRPCStatus is a gRPC call's status, separate from Status because a failed call
+	// normally has HTTP 200. Nil for other calls, and for a response without one.
+	GRPCStatus *int `json:"grpc_status,omitempty"`
 	// Header and Body are unsanitized target output. They're for in-process
 	// comparison and are deliberately never serialized.
-	Header http.Header `json:"-"`
-	Body   []byte      `json:"-"`
+	Header  http.Header `json:"-"`
+	Trailer http.Header `json:"-"`
+	Body    []byte      `json:"-"`
 }
 
 // RecordResult is one logical record's outcome on all targets.
@@ -83,6 +90,7 @@ type RecordResult struct {
 	Seq      uint64                `json:"seq"`
 	Method   string                `json:"method"`
 	Path     string                `json:"path"`
+	RPC      string                `json:"rpc,omitempty"`
 	RawQuery string                `json:"raw_query,omitempty"`
 	Calls    [roleCount]CallResult `json:"calls"`
 }
@@ -97,6 +105,8 @@ type TargetSummary struct {
 	// Resends counts requests the HTTP client sent again by itself. See
 	// docs/replay.md for when that happens.
 	Resends int64 `json:"resends,omitempty"`
+	// GRPCStatuses counts gRPC calls by status name.
+	GRPCStatuses map[string]int64 `json:"grpc_statuses,omitempty"`
 }
 
 // Summary accounts for every record in a dataset.
@@ -188,6 +198,7 @@ type Engine struct {
 	cfg     Config
 	targets [roleCount]*target
 	methods map[string]bool
+	rpcs    map[string]bool
 	global  chan struct{}
 	limiter *rate.Limiter
 }
@@ -211,7 +222,11 @@ func New(cfg Config) (*Engine, error) {
 		allowed[origin] = true
 	}
 
-	e := &Engine{cfg: cfg, methods: methods, global: make(chan struct{}, cfg.Concurrency)}
+	rpcs, err := allowedRPCs(cfg)
+	if err != nil {
+		return nil, err
+	}
+	e := &Engine{cfg: cfg, methods: methods, rpcs: rpcs, global: make(chan struct{}, cfg.Concurrency)}
 	if cfg.RecordsPerSecond > 0 {
 		e.limiter = rate.NewLimiter(rate.Limit(cfg.RecordsPerSecond), 1)
 	}
@@ -241,6 +256,35 @@ func New(cfg Config) (*Engine, error) {
 		e.targets[i] = newTarget(role, u, tc.Headers, cfg)
 	}
 	return e, nil
+}
+
+// allowedRPCs validates the gRPC allowlist against the descriptor set, so that a typo or
+// a streaming method is an error at startup rather than a list that matches nothing.
+func allowedRPCs(cfg Config) (map[string]bool, error) {
+	rpcs := make(map[string]bool, len(cfg.AllowRPCs))
+	if len(cfg.AllowRPCs) == 0 {
+		return rpcs, nil
+	}
+	if cfg.Descriptors == nil {
+		return nil, errors.New("replay: allowing RPCs needs the descriptor set the recordings were sanitized with")
+	}
+	for _, rpc := range cfg.AllowRPCs {
+		method, err := cfg.Descriptors.Method(rpc)
+		if err != nil {
+			return nil, fmt.Errorf("replay: allowed RPC %q: %w", rpc, err)
+		}
+		if protoset.IsStreaming(method) {
+			return nil, fmt.Errorf("replay: allowed RPC %q streams, and only unary calls are replayed", rpc)
+		}
+		rpcs[rpc] = true
+	}
+	// gRPC needs HTTP/2, which plain http:// targets only speak with h2c.
+	for _, tc := range []TargetConfig{cfg.BaselineA, cfg.BaselineB, cfg.Candidate} {
+		if !cfg.H2C && strings.HasPrefix(strings.ToLower(tc.URL), "http://") {
+			return nil, errors.New("replay: gRPC needs HTTP/2: use https targets, or h2c for plain http ones")
+		}
+	}
+	return rpcs, nil
 }
 
 func newTarget(role Role, origin *url.URL, headers http.Header, cfg Config) *target {
@@ -378,9 +422,12 @@ func (e *Engine) skipReason(entry traffic.Entry) string {
 			return entry.Replay.Reason
 		}
 		return SkipNotReplayable
-	case entry.Protocol == traffic.ProtocolGRPC:
-		return SkipUnsupportedProtocol
-	case !e.methods[entry.Method]:
+	case entry.Protocol == traffic.ProtocolGRPC && !e.rpcs[entry.RPC]:
+		return SkipRPCNotAllowed
+	case entry.Protocol == traffic.ProtocolGRPC && entry.DescriptorDigest != e.cfg.Descriptors.Digest():
+		// The stored message was sanitized and encoded with another schema.
+		return SkipDescriptorMismatch
+	case entry.Protocol != traffic.ProtocolGRPC && !e.methods[entry.Method]:
 		return SkipMutating
 	case entry.BodyState != traffic.BodyPresent && entry.BodyState != traffic.BodyEmpty:
 		return SkipBodyUnavailable
@@ -460,6 +507,7 @@ func (e *Engine) replayRecord(ctx context.Context, ds *traffic.Dataset, entry tr
 		Seq:      rec.Seq,
 		Method:   rec.Request.Method,
 		Path:     rec.Request.Path,
+		RPC:      rec.RPC,
 		RawQuery: rec.Request.RawQuery,
 	}
 	var wg sync.WaitGroup
@@ -481,6 +529,9 @@ func (e *Engine) replayRecord(ctx context.Context, ds *traffic.Dataset, entry tr
 			if call.Status != 0 {
 				target.Statuses = increment(target.Statuses, fmt.Sprintf("%dxx", call.Status/100))
 				target.Protocols = increment(target.Protocols, call.Proto)
+			}
+			if call.GRPCStatus != nil {
+				target.GRPCStatuses = increment(target.GRPCStatuses, grpcwire.StatusName(*call.GRPCStatus))
 			}
 			if call.Attempts > 1 {
 				target.Resends += int64(call.Attempts - 1)
@@ -548,7 +599,7 @@ func (e *Engine) call(ctx context.Context, t *target, rec *traffic.Record) CallR
 	traced := httptrace.WithClientTrace(callCtx, &httptrace.ClientTrace{
 		WroteHeaders: func() { attempts.Add(1) },
 	})
-	req, err := buildRequest(traced, t, rec)
+	req, err := buildRequest(traced, t, rec, e.cfg.Timeout)
 	if err != nil {
 		result.Outcome = CallInvalidRequest
 		return result
@@ -577,7 +628,14 @@ func (e *Engine) call(ctx context.Context, t *target, rec *traffic.Record) CallR
 	default:
 		result.Outcome = CallOK
 		result.Header = resp.Header
+		result.Trailer = resp.Trailer
 		result.Body = body
+	}
+	// Trailers are complete once the body has been read to its end.
+	if rec.Protocol == traffic.ProtocolGRPC {
+		if code, ok := grpcwire.Status(resp.Header, resp.Trailer); ok {
+			result.GRPCStatus = &code
+		}
 	}
 	return result
 }
@@ -598,34 +656,43 @@ func classifyError(ctx, callCtx context.Context, err error) CallOutcome {
 // the transport, which decompresses transparently so that responses compare
 // equal whatever their wire encoding was.
 var droppedHeaders = map[string]bool{
-	"Accept-Encoding":     true,
-	"Connection":          true,
-	"Content-Encoding":    true,
-	"Content-Length":      true,
-	"Expect":              true,
-	"Forwarded":           true,
-	"Host":                true,
-	"Keep-Alive":          true,
-	"Proxy-Authenticate":  true,
-	"Proxy-Authorization": true,
-	"Proxy-Connection":    true,
-	"Te":                  true,
-	"Trailer":             true,
-	"Transfer-Encoding":   true,
-	"Upgrade":             true,
-	"X-Forwarded-For":     true,
-	"X-Forwarded-Host":    true,
-	"X-Forwarded-Port":    true,
-	"X-Forwarded-Proto":   true,
-	"X-Real-Ip":           true,
+	"Accept-Encoding":      true,
+	"Connection":           true,
+	"Content-Encoding":     true,
+	"Content-Length":       true,
+	"Expect":               true,
+	"Forwarded":            true,
+	"Grpc-Accept-Encoding": true,
+	"Grpc-Encoding":        true,
+	"Grpc-Timeout":         true,
+	"Host":                 true,
+	"Keep-Alive":           true,
+	"Proxy-Authenticate":   true,
+	"Proxy-Authorization":  true,
+	"Proxy-Connection":     true,
+	"Te":                   true,
+	"Trailer":              true,
+	"Transfer-Encoding":    true,
+	"Upgrade":              true,
+	"X-Forwarded-For":      true,
+	"X-Forwarded-Host":     true,
+	"X-Forwarded-Port":     true,
+	"X-Forwarded-Proto":    true,
+	"X-Real-Ip":            true,
 }
 
 // buildRequest assembles a call from the target's origin and the record's path
 // and query. The URL is set field by field rather than parsed from a joined
 // string, so no record content can change the scheme or host.
-func buildRequest(ctx context.Context, t *target, rec *traffic.Record) (*http.Request, error) {
+func buildRequest(ctx context.Context, t *target, rec *traffic.Record, timeout time.Duration) (*http.Request, error) {
+	grpcCall := rec.Protocol == traffic.ProtocolGRPC
 	var body io.Reader = http.NoBody
-	if len(rec.Request.Body.Data) > 0 {
+	switch {
+	case grpcCall:
+		// A unary request is exactly one message, even an empty one. It's sent
+		// uncompressed, so the stored, sanitized bytes are what every target sees.
+		body = bytes.NewReader(grpcwire.AppendFrame(nil, rec.Request.Body.Data, false))
+	case len(rec.Request.Body.Data) > 0:
 		body = bytes.NewReader(rec.Request.Body.Data)
 	}
 	req, err := http.NewRequestWithContext(ctx, rec.Request.Method, t.origin.String(), body)
@@ -656,6 +723,15 @@ func buildRequest(ctx context.Context, t *target, rec *traffic.Record) (*http.Re
 			continue
 		}
 		req.Header[canonical] = slices.Clone(values)
+	}
+	if grpcCall {
+		req.Header.Set("Content-Type", "application/grpc")
+		// gRPC requires this, and it is hop-by-hop, so the recording doesn't keep it.
+		req.Header.Set("Te", "trailers")
+		// The replay's own deadline, rather than whatever the original call had left.
+		if value := grpcwire.FormatTimeout(timeout); value != "" {
+			req.Header.Set("Grpc-Timeout", value)
+		}
 	}
 	for name, values := range t.headers {
 		req.Header[http.CanonicalHeaderKey(name)] = slices.Clone(values)
