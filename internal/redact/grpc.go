@@ -54,6 +54,9 @@ type protoWalk struct {
 	unknown       bool
 	anyUnresolved bool
 	anyTooDeep    bool
+	// anyUnsanitized means an Any still holds the bytes it arrived with, after its
+	// contents were sanitized but couldn't be packed again.
+	anyUnsanitized bool
 	// anyDepth counts the Any messages being unpacked around the current one.
 	anyDepth int
 }
@@ -117,9 +120,12 @@ func (e *Engine) GRPCBody(location Location, in GRPCInput, hits *Hits) GRPCResul
 	}
 	var walk protoWalk
 	e.sanitizeMessage(location, message, hits, &walk)
-	if walk.anyTooDeep {
+	switch {
+	case walk.anyTooDeep:
 		// Levels past the limit weren't sanitized, so the message can't even be compared.
 		return omit(ReasonProtoAnyTooDeep)
+	case walk.anyUnsanitized:
+		return omit(ReasonProtoMalformed)
 	}
 	result.Message = message
 	switch {
@@ -129,7 +135,7 @@ func (e *Engine) GRPCBody(location Location, in GRPCInput, hits *Hits) GRPCResul
 		return omit(ReasonProtoAnyUnresolved)
 	}
 
-	data, err := proto.MarshalOptions{Deterministic: true}.Marshal(message)
+	data, err := sanitizedEncoding.Marshal(message)
 	if err != nil {
 		return omit(ReasonProtoMalformed)
 	}
@@ -215,6 +221,11 @@ func redactProtoField(message protoreflect.Message, field protoreflect.FieldDesc
 	return 1
 }
 
+// sanitizedEncoding encodes sanitized messages. It is deterministic, so equal messages are
+// stored alike, and it allows missing required fields, since clearing a covered one is
+// what redaction does.
+var sanitizedEncoding = proto.MarshalOptions{Deterministic: true, AllowPartial: true}
+
 // sanitizeAny unpacks an Any whose type the set describes, sanitizes it, and packs it
 // again. An Any of any other type is opaque bytes that no rule can see into.
 func (e *Engine) sanitizeAny(location Location, message protoreflect.Message, hits *Hits, walk *protoWalk) {
@@ -242,9 +253,9 @@ func (e *Engine) sanitizeAny(location Location, message protoreflect.Message, hi
 		return
 	}
 	e.sanitizeMessage(location, inner, hits, walk)
-	packed, err := proto.MarshalOptions{Deterministic: true}.Marshal(inner)
+	packed, err := sanitizedEncoding.Marshal(inner)
 	if err != nil {
-		walk.anyUnresolved = true
+		walk.anyUnsanitized = true
 		return
 	}
 	message.Set(valueField, protoreflect.ValueOfBytes(packed))
