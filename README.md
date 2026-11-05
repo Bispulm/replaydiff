@@ -16,7 +16,7 @@ generated IDs.
 | Synthetic fixtures with deliberate regressions | Implemented |
 | JSON comparison, noise handling, latency and error-rate checks | Implemented and tested |
 | Protobuf redaction and comparison, from a descriptor set | Implemented and tested |
-| CI gate with a policy, JSON, JUnit and Markdown reports | Implemented and tested. The workflow hasn't run on GitHub yet. |
+| CI gate with a policy, JSON, JUnit and Markdown reports | Implemented and tested, including in this repository's CI |
 | Helm sidecar, metrics, traces | Planned |
 | Overhead and throughput benchmarks | Planned. No performance numbers are claimed yet. |
 
