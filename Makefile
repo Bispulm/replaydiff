@@ -49,3 +49,9 @@ kind-test:
 .PHONY: bench
 bench:
 	go test -run '^$$' -bench . -benchmem -count 5 ./internal/...
+
+# Measures capture and replay against the targets in docs/benchmarks.md. Takes about ten
+# minutes and loads the machine, so run it with nothing else heavy going on.
+.PHONY: bench-harness
+bench-harness: build
+	bin/replaydiff-bench --capture bin/replaydiff --out .bench
