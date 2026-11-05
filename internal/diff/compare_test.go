@@ -57,7 +57,7 @@ func record(seq int, method, path string, a, b, c reply) *replay.RecordResult {
 	return result
 }
 
-func newComparator(t *testing.T, config, policy string) *Comparator {
+func newComparator(t testing.TB, config, policy string) *Comparator {
 	t.Helper()
 	cfg, err := ParseConfig([]byte(config))
 	if err != nil {
