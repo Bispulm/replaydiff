@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/Bispulm/replaydiff/internal/fixture"
@@ -75,6 +76,19 @@ func orderBytes(t testing.TB, set *protoset.Set, jsonText string) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func okOrderMessage(t testing.TB, set *protoset.Set, jsonText string) *dynamicpb.Message {
+	t.Helper()
+	descriptor, err := set.MessageByURL("type.googleapis.com/fixture.orders.v1.Order")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := dynamicpb.NewMessage(descriptor)
+	if err := (protojson.UnmarshalOptions{Resolver: set.Types()}).Unmarshal([]byte(jsonText), m); err != nil {
+		t.Fatal(err)
+	}
+	return m
 }
 
 func okOrder(t *testing.T, set *protoset.Set, jsonText string) grpcReply {
@@ -400,5 +414,50 @@ func TestGRPCServerFaultsCountTowardTheErrorRate(t *testing.T) {
 				t.Fatalf("error_rate_regression reported = %v, want %v: %v", got, tc.want, kinds(result))
 			}
 		})
+	}
+}
+
+// Comparison unpacks no more levels of Any than redaction sanitized. Deeper ones are
+// compared by digest, so their bytes are never decoded or shown.
+func TestAnyPackingAnyIsUnpacked(t *testing.T) {
+	set := orderDescriptors(t)
+	nested := func(tier string) grpcReply {
+		return okOrder(t, set, `{"extension":{"@type":"type.googleapis.com/google.protobuf.Any","value":{"@type":"type.googleapis.com/fixture.orders.v1.Customer","tier":"`+tier+`"}}}`)
+	}
+	wantKinds(t, compareGRPC(t, nested("gold"), nested("gold"), nested("silver")), "warning:value_changed:$.extension.value.tier")
+}
+
+func TestNestedAnyIsComparedOnlyAsDeepAsRedactionGoes(t *testing.T) {
+	set := orderDescriptors(t)
+	anyDescriptor, err := set.MessageByURL("type.googleapis.com/google.protobuf.Any")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const secret = "rdsentinel-below-the-limit"
+	inner, err := proto.Marshal(okOrderMessage(t, set, `{"note":"`+secret+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	typeURL := "type.googleapis.com/fixture.orders.v1.Order"
+	for range protoset.MaxAnyDepth + 1 {
+		packed := dynamicpb.NewMessage(anyDescriptor)
+		packed.Set(anyDescriptor.Fields().ByName("type_url"), protoreflect.ValueOfString(typeURL))
+		packed.Set(anyDescriptor.Fields().ByName("value"), protoreflect.ValueOfBytes(inner))
+		if inner, err = proto.Marshal(packed); err != nil {
+			t.Fatal(err)
+		}
+		typeURL = "type.googleapis.com/google.protobuf.Any"
+	}
+	outer := dynamicpb.NewMessage(anyDescriptor)
+	if err := proto.Unmarshal(inner, outer); err != nil {
+		t.Fatal(err)
+	}
+	tree := anyTree(outer, set, 0)
+	data, err := json.Marshal(tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), secret) || !strings.Contains(string(data), "digest") {
+		t.Fatalf("tree = %s", data)
 	}
 }

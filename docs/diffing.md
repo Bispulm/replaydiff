@@ -61,7 +61,7 @@ schema, such as `$.customer.tier`.
 | Enum | By number, so an unknown number still compares | | |
 | 64-bit integer | Exactly | `9007199254740993`, `9007199254740992` | Different |
 | `bytes` | By value, shown as base64 | | |
-| `Any` of a type in the set | Unpacked and compared by field. Its packed type is its type. | Another packed type | Breaking `type_changed` |
+| `Any` of a type in the set | Unpacked and compared by field, at most 8 deep. Its packed type is its type, and an `Any` it packs is under `value`. | Another packed type | Breaking `type_changed` |
 | `Any` of another type | By a digest of its bytes, which are never shown | | `value_changed` at `.value` |
 | A field the set doesn't describe | By presence and wire type only, at a path such as `$['#99']` | | |
 

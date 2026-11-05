@@ -22,6 +22,12 @@ import (
 // ErrUnknownMethod means an RPC isn't described by the set.
 var ErrUnknownMethod = errors.New("method isn't in the descriptor set")
 
+// MaxAnyDepth is how many levels of google.protobuf.Any are unpacked inside one another.
+// Each is decoded on its own, so protobuf's nesting limit doesn't cover them, and every
+// level holds a copy of what it packs: unbounded, the cost grows with the square of the
+// message size.
+const MaxAnyDepth = 8
+
 // ErrMalformed means bytes didn't decode as the message.
 var ErrMalformed = errors.New("malformed protobuf message")
 

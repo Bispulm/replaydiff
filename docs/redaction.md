@@ -101,7 +101,8 @@ proto_fields:
 
 A rule follows its message type, not a path. It applies wherever that message appears, in
 requests and responses: at any depth, in lists, in map values, and inside a
-`google.protobuf.Any` whose type the set has.
+`google.protobuf.Any` whose type the set has. Each `Any` is decoded separately, so they are
+unpacked at most 8 deep, and a message nesting them deeper is omitted.
 
 | Field | Result |
 |---|---|
@@ -123,6 +124,7 @@ arrived:
 | Bytes that don't decode as the message | `proto_malformed` | No |
 | Fields the set doesn't describe | `proto_unknown_fields` | No |
 | An `Any` of a type outside the set | `proto_any_unresolved` | No |
+| `Any` messages packed more than 8 deep | `proto_any_too_deep` | No |
 
 Unknown fields and foreign `Any` values are bytes that no rule can see into, so the whole
 message is omitted rather than stored with them. An omitted response keeps its request

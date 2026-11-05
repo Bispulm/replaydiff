@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -289,6 +290,50 @@ func TestGRPCBodiesThatCannotBeSanitizedAreOmitted(t *testing.T) {
 				t.Fatalf("result = %+v", res.BodyResult)
 			}
 		})
+	}
+}
+
+// nestedAny is an Order whose extension packs an Any, which packs another, depth times.
+func nestedAny(depth int) []byte {
+	const anyURL = "type.googleapis.com/google.protobuf.Any"
+	var value []byte
+	for range depth {
+		anyMessage := protowire.AppendTag(nil, 1, protowire.BytesType)
+		anyMessage = protowire.AppendString(anyMessage, anyURL)
+		if len(value) > 0 {
+			anyMessage = protowire.AppendTag(anyMessage, 2, protowire.BytesType)
+			anyMessage = protowire.AppendBytes(anyMessage, value)
+		}
+		value = anyMessage
+	}
+	return protowire.AppendBytes(protowire.AppendTag(nil, 17, protowire.BytesType), value)
+}
+
+// Each Any is decoded on its own, so protobuf's own nesting limit never applies, and
+// every level copied what remained. A few hundred KiB once took gigabytes.
+func TestNestedAnyIsBounded(t *testing.T) {
+	set := fixtureSet(t)
+	engine := protoEngine(t, protoPolicy, set)
+	within := engine.GRPCBody(ResponseBody, GRPCInput{RPC: getOrder, Data: framed(nestedAny(protoset.MaxAnyDepth))}, &Hits{})
+	if within.Body.State != traffic.BodyPresent || within.Message == nil {
+		t.Fatalf("%d levels: %+v", protoset.MaxAnyDepth, within.BodyResult)
+	}
+	deeper := engine.GRPCBody(ResponseBody, GRPCInput{RPC: getOrder, Data: framed(nestedAny(protoset.MaxAnyDepth + 1))}, &Hits{})
+	if !deeper.Failed || deeper.Body.Reason != ReasonProtoAnyTooDeep || deeper.Message != nil {
+		t.Fatalf("%d levels: %+v, message %v", protoset.MaxAnyDepth+1, deeper.BodyResult, deeper.Message != nil)
+	}
+
+	data := framed(nestedAny(8000))
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	res := engine.GRPCBody(ResponseBody, GRPCInput{RPC: getOrder, Data: data}, &Hits{})
+	runtime.ReadMemStats(&after)
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 64<<20 {
+		t.Fatalf("a %d KiB message allocated %d MiB", len(data)>>10, allocated>>20)
+	}
+	if res.Body.Reason != ReasonProtoAnyTooDeep {
+		t.Fatalf("result = %+v", res.BodyResult)
 	}
 }
 

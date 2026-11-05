@@ -66,7 +66,7 @@ func (r *recordCompare) grpcView(call *replay.CallResult) bodyView {
 	}, &discard)
 	switch {
 	case result.Message != nil:
-		return bodyView{kind: viewJSON, tree: protoTree(result.Message, r.c.engine.Descriptors())}
+		return bodyView{kind: viewJSON, tree: protoTree(result.Message, r.c.engine.Descriptors(), 0)}
 	case result.Body.State == traffic.BodyEmpty:
 		return bodyView{kind: viewEmpty}
 	default:
@@ -127,7 +127,7 @@ func grpcFault(code int) bool { return code < 0 || grpcwire.IsServerFault(code) 
 // appears only when set, so it can be removed. An ordinary scalar always appears, holding
 // its default when unset, because the wire format can't tell those apart. Lists and maps
 // always appear, since empty and absent are the same.
-func protoTree(message protoreflect.Message, set *protoset.Set) map[string]any {
+func protoTree(message protoreflect.Message, set *protoset.Set, anyDepth int) map[string]any {
 	out := make(map[string]any)
 	fields := message.Descriptor().Fields()
 	for i := range fields.Len() {
@@ -137,7 +137,7 @@ func protoTree(message protoreflect.Message, set *protoset.Set) map[string]any {
 		case field.IsMap():
 			entries := protoMap{}
 			message.Get(field).Map().Range(func(key protoreflect.MapKey, value protoreflect.Value) bool {
-				entries[key.String()] = protoValue(field.MapValue(), value, set)
+				entries[key.String()] = protoValue(field.MapValue(), value, set, anyDepth)
 				return true
 			})
 			out[name] = entries
@@ -145,15 +145,15 @@ func protoTree(message protoreflect.Message, set *protoset.Set) map[string]any {
 			list := message.Get(field).List()
 			items := make([]any, list.Len())
 			for j := range list.Len() {
-				items[j] = protoValue(field, list.Get(j), set)
+				items[j] = protoValue(field, list.Get(j), set, anyDepth)
 			}
 			out[name] = items
 		case field.HasPresence():
 			if message.Has(field) {
-				out[name] = protoValue(field, message.Get(field), set)
+				out[name] = protoValue(field, message.Get(field), set, anyDepth)
 			}
 		default:
-			out[name] = protoValue(field, message.Get(field), set)
+			out[name] = protoValue(field, message.Get(field), set, anyDepth)
 		}
 	}
 	for number, wire := range unknownFields(message.GetUnknown()) {
@@ -162,13 +162,13 @@ func protoTree(message protoreflect.Message, set *protoset.Set) map[string]any {
 	return out
 }
 
-func protoValue(field protoreflect.FieldDescriptor, value protoreflect.Value, set *protoset.Set) any {
+func protoValue(field protoreflect.FieldDescriptor, value protoreflect.Value, set *protoset.Set, anyDepth int) any {
 	switch field.Kind() {
 	case protoreflect.MessageKind, protoreflect.GroupKind:
-		if field.Message().FullName() == "google.protobuf.Any" {
-			return anyTree(value.Message(), set)
+		if field.Message().FullName() == anyName {
+			return anyTree(value.Message(), set, anyDepth)
 		}
-		return protoTree(value.Message(), set)
+		return protoTree(value.Message(), set, anyDepth)
 	case protoreflect.EnumKind:
 		number := value.Enum()
 		enum := protoEnum{Number: int32(number)}
@@ -194,9 +194,12 @@ func protoValue(field protoreflect.FieldDescriptor, value protoreflect.Value, se
 	}
 }
 
-// anyTree unpacks an Any whose type the set describes. Any other type stays opaque: its
-// bytes weren't sanitized, so only a digest of them is kept.
-func anyTree(message protoreflect.Message, set *protoset.Set) anyValue {
+const anyName = "google.protobuf.Any"
+
+// anyTree unpacks an Any whose type the set describes, to the depth redaction sanitizes.
+// Any other type, or a deeper level, stays opaque: its bytes weren't sanitized, so only a
+// digest of them is kept.
+func anyTree(message protoreflect.Message, set *protoset.Set, anyDepth int) anyValue {
 	fields := message.Descriptor().Fields()
 	typeURL := message.Get(fields.ByName("type_url")).String()
 	value := message.Get(fields.ByName("value")).Bytes()
@@ -204,10 +207,15 @@ func anyTree(message protoreflect.Message, set *protoset.Set) anyValue {
 	if typeURL == "" && len(value) == 0 {
 		return result
 	}
-	if descriptor, err := set.MessageByURL(typeURL); err == nil {
+	if descriptor, err := set.MessageByURL(typeURL); err == nil && anyDepth < protoset.MaxAnyDepth {
 		inner := dynamicpb.NewMessage(descriptor)
 		if protoset.Unmarshal(value, inner) == nil {
-			result.Tree = protoTree(inner, set)
+			if descriptor.FullName() == anyName {
+				// An Any packing another is unpacked in turn, under the field that holds it.
+				result.Tree = map[string]any{"value": anyTree(inner, set, anyDepth+1)}
+			} else {
+				result.Tree = protoTree(inner, set, anyDepth+1)
+			}
 			return result
 		}
 	}
