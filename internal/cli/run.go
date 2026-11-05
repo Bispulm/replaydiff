@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Bispulm/replaydiff/internal/diff"
+	"github.com/Bispulm/replaydiff/internal/redact"
 	"github.com/Bispulm/replaydiff/internal/replay"
 	"github.com/Bispulm/replaydiff/internal/traffic"
 )
@@ -21,19 +23,20 @@ import (
 // reportSchema identifies the run report format.
 const reportSchema = "replaydiff.run/v1"
 
-// verdictNotEvaluated says a run sent traffic but compared nothing. Keeping it
-// in the report means nobody can mistake a completed replay for a passed check.
+// verdictNotEvaluated says no CI policy has judged the findings yet. Keeping it in
+// the report means nobody can mistake a completed run for a passed check.
 const verdictNotEvaluated = "not_evaluated"
 
-const runUsage = `Usage: replaydiff run --traffic DIR --baseline-a URL --baseline-b URL --candidate URL
-                      --allow-origin URL [--allow-origin URL ...] --report FILE [flags]
+const runUsage = `Usage: replaydiff run --traffic DIR --redact FILE --report FILE
+                      --baseline-a URL --baseline-b URL --candidate URL
+                      --allow-origin URL [--allow-origin URL ...] [flags]
 
-Replay eligible records against both baselines and the candidate. Only GET, HEAD
-and OPTIONS are eligible unless --allow-method says otherwise. Each record makes
-one call per target, with no retries and no redirects followed.
+Replay eligible records against both baselines and the candidate, and compare the
+responses. Only GET, HEAD and OPTIONS are eligible unless --allow-method says
+otherwise. replaydiff makes one attempt per target, and redirects aren't followed.
 
 Exit codes:
-  0  the replay finished with complete evidence (responses aren't compared yet)
+  0  the replay finished with complete evidence, whatever the findings were
   2  invalid configuration, execution failure, or incomplete evidence
 
 `
@@ -46,6 +49,7 @@ type runReport struct {
 	Problems         []string               `json:"problems,omitempty"`
 	Config           reportConfig           `json:"config"`
 	Summary          *replay.Summary        `json:"summary"`
+	Comparison       *diff.Result           `json:"comparison,omitempty"`
 	Samples          []*replay.RecordResult `json:"samples,omitempty"`
 }
 
@@ -83,6 +87,8 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	baselineB := fs.String("baseline-b", "", "second baseline origin, running the same version as the first (required)")
 	candidate := fs.String("candidate", "", "candidate origin (required)")
 	reportPath := fs.String("report", "", "file to write the run report to (required)")
+	policyPath := fs.String("redact", "", "redaction policy applied to responses before comparing them, because their values can appear in the report (required)")
+	diffConfig := fs.String("diff-config", "", "comparison rules; see docs/diffing.md")
 	maxSamples := fs.Int("max-samples", 100, "most record outcomes to include in the report")
 	maxRecords := fs.Int("max-records", traffic.DefaultMaxRecords, "fail if the dataset holds more records than this")
 	fs.Var(&origins, "allow-origin", "origin replay may send to; every target must be listed (required, repeatable)")
@@ -109,7 +115,7 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, "run", err)
 	}
 	for _, required := range []struct{ name, value string }{
-		{"traffic", *dir}, {"baseline-a", *baselineA}, {"baseline-b", *baselineB}, {"candidate", *candidate}, {"report", *reportPath},
+		{"traffic", *dir}, {"redact", *policyPath}, {"baseline-a", *baselineA}, {"baseline-b", *baselineB}, {"candidate", *candidate}, {"report", *reportPath},
 	} {
 		if required.value == "" {
 			return fail(stderr, "run", fmt.Errorf("--%s is required", required.name))
@@ -134,6 +140,24 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, "run", err)
 	}
 
+	policy, err := redact.LoadPolicy(*policyPath)
+	if err != nil {
+		return fail(stderr, "run", err)
+	}
+	sanitizer, err := redact.NewEngine(policy, redact.Options{})
+	if err != nil {
+		return fail(stderr, "run", err)
+	}
+	defer sanitizer.Close()
+	comparisonConfig, err := diff.LoadConfig(*diffConfig)
+	if err != nil {
+		return fail(stderr, "run", err)
+	}
+	comparator, err := diff.New(comparisonConfig, sanitizer)
+	if err != nil {
+		return fail(stderr, "run", err)
+	}
+
 	// Targets are checked before the dataset is opened, so a bad target can't
 	// have any effect.
 	engine, err := replay.New(cfg)
@@ -149,10 +173,15 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	defer func() { _ = dataset.Close() }()
 
 	samples := newSampleSet(*maxSamples)
-	summary, err := engine.Run(ctx, dataset, samples.add)
+	summary, err := engine.Run(ctx, dataset, func(result *replay.RecordResult) {
+		// The comparator goes first, because adding a sample drops the response data.
+		comparator.Observe(result)
+		samples.add(result)
+	})
 	if err != nil {
 		return fail(stderr, "run", err)
 	}
+	comparison := comparator.Result()
 
 	report := &runReport{
 		Schema:           reportSchema,
@@ -170,8 +199,9 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			MaxActiveSessions:    cfg.MaxActiveSessions,
 			TimeoutSeconds:       cfg.Timeout.Seconds(),
 		},
-		Summary: summary,
-		Samples: samples.sorted(),
+		Summary:    summary,
+		Comparison: comparison,
+		Samples:    samples.sorted(),
 	}
 	if err := writeReport(*reportPath, report); err != nil {
 		return fail(stderr, "run", err)
@@ -179,6 +209,9 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	fmt.Fprintf(stdout, "replayed %d of %d eligible record(s), %d skipped, %d upstream call(s) in %.2fs\n",
 		summary.Replayed, summary.Eligible, summary.Records-summary.Eligible, summary.UpstreamCalls, summary.DurationSeconds)
+	fmt.Fprintf(stdout, "findings: %d breaking, %d warning, %d uncertain, %d info\n",
+		comparison.Counts[diff.SeverityBreaking], comparison.Counts[diff.SeverityWarning],
+		comparison.Counts[diff.SeverityUncertain], comparison.Counts[diff.SeverityInfo])
 	fmt.Fprintf(stdout, "report: %s\n", *reportPath)
 	for _, reason := range sortedKeys(summary.CaptureDrops) {
 		fmt.Fprintf(stderr, "warning: capture dropped %d exchange(s): %s\n", summary.CaptureDrops[reason], reason)
@@ -194,7 +227,7 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		return ExitFailure
 	}
-	fmt.Fprintln(stderr, "note: responses aren't compared yet, so this run says nothing about regressions")
+	fmt.Fprintln(stderr, "note: this exit code covers the evidence, not the findings; no CI policy is applied yet")
 	return ExitOK
 }
 

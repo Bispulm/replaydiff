@@ -53,9 +53,13 @@ proxied="http://127.0.0.1:$PROXY"
 auth=(-H "Authorization: Bearer demo-secret-authorization" -H "Cookie: sid=demo-secret-cookie")
 curl -fsS "${auth[@]}" "$proxied/v1/orders/ord-1?token=demo-secret-query" -o /dev/null
 curl -sS  "${auth[@]}" "$proxied/v1/orders/ord-missing" -o /dev/null
-curl -fsS "${auth[@]}" "$proxied/v1/users/usr-1" -o /dev/null
-curl -fsS "${auth[@]}" "$proxied/v1/inventory/sku1" -o /dev/null
-curl -fsS "${auth[@]}" "$proxied/v1/catalog" -o /dev/null
+for i in 2 3 4 5; do curl -fsS "${auth[@]}" "$proxied/v1/orders/ord-$i" -o /dev/null; done
+for i in 1 2 3 4 5; do
+  curl -fsS "${auth[@]}" "$proxied/v1/users/usr-$i" -o /dev/null
+  curl -fsS "${auth[@]}" "$proxied/v1/inventory/sku$i" -o /dev/null
+  curl -fsS "${auth[@]}" "$proxied/v1/catalog" -o /dev/null
+done
+for _ in $(seq 1 25); do curl -fsS "${auth[@]}" "$proxied/v1/reports/daily" -o /dev/null; done
 curl -fsS "${auth[@]}" "$proxied/v1/cart/s1/step/1" -o /dev/null
 curl -fsS "${auth[@]}" "$proxied/v1/cart/s1/step/2" -o /dev/null
 curl -fsS -H 'Content-Type: application/json' -d '{"username":"u","password":"demo-secret-password"}' "$proxied/v1/login" -o /dev/null
@@ -80,23 +84,23 @@ echo "not found in segments, capture logs, or decoded records"
 echo
 echo "== Replaying against two baselines and a candidate"
 base() { echo "http://127.0.0.1:$1"; }
-"$bin/replaydiff" run --traffic "$work/traffic" --report "$work/report.json" \
+"$bin/replaydiff" run --traffic "$work/traffic" --report "$work/report.json" --redact examples/redact.yaml \
   --baseline-a "$(base $BASE_A)" --baseline-b "$(base $BASE_B)" --candidate "$(base $CANDIDATE)" \
   --allow-origin "$(base $BASE_A)" --allow-origin "$(base $BASE_B)" --allow-origin "$(base $CANDIDATE)" \
-  --rps 100
+  --rps 200
 
 echo
-echo "== Report summary"
+echo "== Findings: deliberate regressions, with timestamps and IDs explained as noise"
 set +e
 "$bin/replaydiff" report "$work/report.json"
 code=$?
 set -e
-echo "report exit code: $code (2 until responses are compared)"
+echo "report exit code: $code (2 until a CI policy exists)"
 
 echo
 echo "== Refusing a target that isn't on the allowlist"
 set +e
-"$bin/replaydiff" run --traffic "$work/traffic" --report "$work/refused.json" \
+"$bin/replaydiff" run --traffic "$work/traffic" --report "$work/refused.json" --redact examples/redact.yaml \
   --baseline-a "$(base $BASE_A)" --baseline-b "$(base $BASE_B)" --candidate "http://127.0.0.1:9" \
   --allow-origin "$(base $BASE_A)" --allow-origin "$(base $BASE_B)"
 code=$?

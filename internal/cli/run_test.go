@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Bispulm/replaydiff/internal/diff"
 	"github.com/Bispulm/replaydiff/internal/replay"
 )
 
@@ -21,8 +22,9 @@ func TestRunRejectsInvalidInvocations(t *testing.T) {
 	dir := t.TempDir()
 	report := filepath.Join(dir, "report.json")
 	a, b, c := "http://127.0.0.1:1", "http://127.0.0.1:2", "http://127.0.0.1:3"
+	policy := writePolicy(t, "")
 	base := func(extra ...string) []string {
-		return append([]string{"run", "--traffic", dir, "--baseline-a", a, "--baseline-b", b, "--candidate", c, "--report", report}, extra...)
+		return append([]string{"run", "--traffic", dir, "--redact", policy, "--baseline-a", a, "--baseline-b", b, "--candidate", c, "--report", report}, extra...)
 	}
 	allowAll := []string{"--allow-origin", a, "--allow-origin", b, "--allow-origin", c}
 
@@ -30,9 +32,13 @@ func TestRunRejectsInvalidInvocations(t *testing.T) {
 		args []string
 		want string
 	}{
-		"no traffic":         {[]string{"run", "--baseline-a", a, "--baseline-b", b, "--candidate", c, "--report", report}, "--traffic"},
-		"no candidate":       {[]string{"run", "--traffic", dir, "--baseline-a", a, "--baseline-b", b, "--report", report}, "--candidate"},
-		"no report":          {[]string{"run", "--traffic", dir, "--baseline-a", a, "--baseline-b", b, "--candidate", c}, "--report"},
+		"no traffic":         {[]string{"run", "--redact", policy, "--baseline-a", a, "--baseline-b", b, "--candidate", c, "--report", report}, "--traffic"},
+		"no candidate":       {[]string{"run", "--redact", policy, "--traffic", dir, "--baseline-a", a, "--baseline-b", b, "--report", report}, "--candidate"},
+		"no report":          {[]string{"run", "--redact", policy, "--traffic", dir, "--baseline-a", a, "--baseline-b", b, "--candidate", c}, "--report"},
+		"no policy":          {[]string{"run", "--traffic", dir, "--baseline-a", a, "--baseline-b", b, "--candidate", c, "--report", report, "--allow-origin", a}, "--redact"},
+		"missing policy":     {append(base(allowAll...), "--redact", policy+".absent"), "policy"},
+		"bad diff config":    {base(append(allowAll, "--diff-config", policy+".absent")...), "diff config"},
+		"invalid diff rule":  {base(append(allowAll, "--diff-config", writePolicy(t, "ignores: []"))...), "diff config"},
 		"no allowlist":       {base(), "--allow-origin"},
 		"candidate unlisted": {base("--allow-origin", a, "--allow-origin", b), "allowlist"},
 		"bad credential":     {base(append(allowAll, "--target-credential", "nonsense")...), "ROLE:Header=ENV_VAR"},
@@ -77,6 +83,47 @@ func TestReportAlwaysFailsClosedForNow(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "no verdict") {
 		t.Fatalf("stderr = %q", stderr)
+	}
+}
+
+func TestReportPrintsFindingsInOrderWithCounts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "report.json")
+	report := &runReport{
+		Schema:  reportSchema,
+		Verdict: verdictNotEvaluated,
+		Summary: &replay.Summary{Targets: map[string]*replay.TargetSummary{}},
+		Comparison: &diff.Result{
+			Counts:   map[diff.Severity]int{diff.SeverityBreaking: 1, diff.SeverityWarning: 1},
+			Coverage: diff.Coverage{Records: 3, Compared: 2},
+			Findings: []diff.Finding{
+				{Severity: diff.SeverityBreaking, Kind: diff.KindFieldRemoved, Route: "GET /a", Path: "$.x", Count: 2},
+				{Severity: diff.SeverityWarning, Kind: diff.KindLatencyRegression, Route: "GET /b", Path: "p99", Count: 20, Detail: "candidate 9.0ms, slower baseline 1.0ms"},
+			},
+			Ignored:   []diff.IgnoredField{{Route: "GET /a", Path: "$.t", Count: 4}},
+			Truncated: diff.Truncated{Findings: 7},
+		},
+	}
+	if err := writeReport(path, report); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, _ := runCLI("report", path)
+	if code != ExitFailure {
+		t.Fatalf("exit code = %d", code)
+	}
+	for _, want := range []string{
+		"compared: 2 of 3 records",
+		"findings: 1 breaking, 1 warning, 0 uncertain, 0 info",
+		"GET /a $.x (2)",
+		"candidate 9.0ms",
+		"ignored by rule: GET /a $.t (4)",
+		"7 more finding(s) left out",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("stdout lacks %q:\n%s", want, stdout)
+		}
+	}
+	if strings.Index(stdout, "field_removed") > strings.Index(stdout, "latency_regression") {
+		t.Errorf("findings out of order:\n%s", stdout)
 	}
 }
 

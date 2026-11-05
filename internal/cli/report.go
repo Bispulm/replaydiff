@@ -10,14 +10,16 @@ import (
 	"os"
 	"slices"
 	"strings"
+
+	"github.com/Bispulm/replaydiff/internal/diff"
 )
 
 const reportUsage = `Usage: replaydiff report FILE
 
-Print a summary of a run report.
+Print a summary of a run report and its findings.
 
-Responses aren't compared yet, so there is no policy to apply. This command
-always exits 2, which means a CI job can't pass on a replay nobody checked.
+There is no CI policy yet to judge the findings, so this command always exits 2,
+which means a CI job can't pass on findings nobody judged.
 
 `
 
@@ -77,8 +79,36 @@ func runReportCommand(args []string, stdout, stderr io.Writer) int {
 	for _, problem := range report.Problems {
 		fmt.Fprintf(stdout, "problem: %s\n", problem)
 	}
-	fmt.Fprintln(stderr, "replaydiff report: responses aren't compared yet, so no verdict can be given")
+	printComparison(stdout, report.Comparison)
+	fmt.Fprintln(stderr, "replaydiff report: no CI policy is applied yet, so no verdict can be given")
 	return ExitFailure
+}
+
+func printComparison(w io.Writer, comparison *diff.Result) {
+	if comparison == nil {
+		return
+	}
+	fmt.Fprintf(w, "compared: %d of %d records\n", comparison.Coverage.Compared, comparison.Coverage.Records)
+	fmt.Fprintf(w, "findings: %d breaking, %d warning, %d uncertain, %d info\n",
+		comparison.Counts[diff.SeverityBreaking], comparison.Counts[diff.SeverityWarning],
+		comparison.Counts[diff.SeverityUncertain], comparison.Counts[diff.SeverityInfo])
+	for _, finding := range slices.Concat(comparison.Findings, comparison.Limited) {
+		fmt.Fprintf(w, "%-9s %-26s %s", finding.Severity, finding.Kind, finding.Route)
+		if finding.Path != "" {
+			fmt.Fprintf(w, " %s", finding.Path)
+		}
+		fmt.Fprintf(w, " (%d)", finding.Count)
+		if finding.Detail != "" {
+			fmt.Fprintf(w, ": %s", finding.Detail)
+		}
+		fmt.Fprintln(w)
+	}
+	for _, ignored := range comparison.Ignored {
+		fmt.Fprintf(w, "ignored by rule: %s %s (%d)\n", ignored.Route, ignored.Path, ignored.Count)
+	}
+	if n := comparison.Truncated.Findings; n > 0 {
+		fmt.Fprintf(w, "%d more finding(s) left out; the counts above include them\n", n)
+	}
 }
 
 func sortedKeys[V any](m map[string]V) []string {
