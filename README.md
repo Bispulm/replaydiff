@@ -8,14 +8,14 @@ and acting as a CI gate are the next milestones.
 
 | Area | State |
 |---|---|
-| HTTP/1.1 capture proxy, bounded and non-blocking | Implemented and tested |
+| HTTP/1.1 and HTTP/2 capture proxy, bounded and non-blocking | Implemented and tested |
 | Rule-based redaction before storage | Implemented and tested |
 | Recoverable, versioned traffic format | Implemented and tested |
 | Allowlisted, session-ordered replay with rate limits | Implemented and tested |
 | Synthetic fixtures with deliberate regressions | Implemented |
 | JSON and protobuf diffing, noise handling | Planned |
 | CI reports (JSON, JUnit, Markdown) and policy | Planned |
-| HTTP/2 and unary gRPC | Planned |
+| Unary gRPC | Planned |
 | Helm sidecar, metrics, traces | Planned |
 | Overhead and throughput benchmarks | Planned. No performance numbers are claimed yet. |
 
@@ -74,6 +74,7 @@ replaydiff run --traffic ./traffic --report report.json \
 - [Traffic format](docs/traffic-format.md)
 - [Redaction](docs/redaction.md)
 - [Replay](docs/replay.md)
+- [Protocols](docs/protocols.md)
 - [Fixtures](docs/fixtures.md)
 - [Related tools](docs/related-tools.md)
 - [Decision records](docs/adr/)
