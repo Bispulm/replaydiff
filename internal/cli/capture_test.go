@@ -54,6 +54,8 @@ func TestCaptureRejectsInvalidInvocations(t *testing.T) {
 		"unknown flag":     {append([]string{"--nope"}, valid...), "-nope"},
 		"bad size":         {append([]string{"--max-request-body", "lots"}, valid...), "max-request-body"},
 		"bad log level":    {append([]string{"--log-level", "loud"}, valid...), "log-level"},
+		"negative queue":   {append([]string{"--queue", "-1"}, valid...), "negative"},
+		"negative workers": {append([]string{"--workers", "-1"}, valid...), "negative"},
 		"unset secret env": {append([]string{"--session-secret-env", "REPLAYDIFF_TEST_UNSET_VARIABLE"}, valid...), "REPLAYDIFF_TEST_UNSET_VARIABLE"},
 	} {
 		t.Run(name, func(t *testing.T) {
