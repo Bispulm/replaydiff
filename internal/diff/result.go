@@ -121,6 +121,9 @@ type Finding struct {
 	// Path is the field with array indexes normalized to [*], or empty when the finding
 	// is about the response as a whole.
 	Path string `json:"path,omitempty"`
+	// ValueType is the JSON type a value finding applies to. A field can hold different
+	// types across records, and each is judged on its own.
+	ValueType string `json:"value_type,omitempty"`
 	// Count is how many times it occurred.
 	Count int `json:"count"`
 	// Observations is how many comparisons of this field were made.
@@ -157,6 +160,7 @@ type NoiseDecision struct {
 type IgnoredField struct {
 	Route string `json:"route"`
 	Path  string `json:"path"`
+	Type  string `json:"type,omitempty"`
 	Count int    `json:"count"`
 	// Structure means the rule also suppressed structural differences.
 	Structure bool `json:"structure,omitempty"`

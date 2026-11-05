@@ -17,6 +17,8 @@ import (
 	"sync"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/Bispulm/replaydiff/internal/redact"
 )
 
 // OtherRoutes collects traffic once the route limit is reached.
@@ -183,6 +185,11 @@ func (c *Config) validate() error {
 	for _, name := range c.CompareHeaders {
 		if strings.TrimSpace(name) == "" {
 			return errors.New("compare_headers: empty name")
+		}
+		// Sanitizing removes these, so they would read as absent on every target and the
+		// comparison would silently find nothing.
+		if redact.HeaderIsDropped(name) {
+			return fmt.Errorf("compare_headers: %q is removed when responses are sanitized, so it can't be compared", name)
 		}
 	}
 	switch c.Evidence {

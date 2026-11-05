@@ -107,6 +107,13 @@ var bodyDerivedHeaders = map[string]bool{
 	"Etag":             true,
 }
 
+// HeaderIsDropped reports whether a header is never kept, whatever the policy, because
+// it describes the connection or the original bytes.
+func HeaderIsDropped(name string) bool {
+	canonical := http.CanonicalHeaderKey(name)
+	return hopByHopHeaders[canonical] || bodyDerivedHeaders[canonical]
+}
+
 // urlHeaders hold a URL whose query the query rules also cover.
 var urlHeaders = map[string]bool{
 	"Referer":          true,

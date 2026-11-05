@@ -37,6 +37,14 @@ const (
 	maxExactDigits   = 512
 )
 
+// arrayLengthType marks a field's stats as tracking an array's length.
+const arrayLengthType = "array_length"
+
+// valueKey separates a field's value comparisons by type, because noise applies to one
+// type. Disagreement about a field's strings says nothing about a change to its numbers.
+// Structural findings don't depend on values, so they use the plain path.
+func valueKey(path, typ string) string { return path + "\x00" + typ }
+
 // fieldStats accumulates comparisons of one field on one route.
 type fieldStats struct {
 	typeName         string
@@ -365,7 +373,7 @@ func (r *recordCompare) view(call *replay.CallResult) bodyView {
 	case traffic.BodyEmpty:
 		return bodyView{kind: viewEmpty}
 	case traffic.BodyPresent:
-		if !strings.HasSuffix(sanitized.Body.ContentType, "json") {
+		if !redact.IsJSONType(sanitized.Body.ContentType) {
 			return bodyView{kind: viewText, tree: textBody(sanitized.Body.Data)}
 		}
 		dec := json.NewDecoder(bytes.NewReader(sanitized.Body.Data))
@@ -572,10 +580,9 @@ func (r *recordCompare) compareArrays(path, concrete string, depth int, a, b, c 
 		a, b, c = sortedByValue(a), sortedByValue(b), sortedByValue(c)
 	}
 	la, lb, lc := len(a), len(b), len(c)
-	lengthKey := path + "#length"
-	lengths := r.field(lengthKey)
+	lengths := r.field(valueKey(path, arrayLengthType))
 	lengths.isLength = true
-	lengths.typeName = "array_length"
+	lengths.typeName = arrayLengthType
 	lengthEvidence := func() *Evidence {
 		value := func(n int) Value { return r.c.value("number", strconv.Itoa(n), true) }
 		return r.evidence(concrete, value(la), value(lb), value(lc))
@@ -613,7 +620,7 @@ func sortedByValue(values []any) []any {
 }
 
 func (r *recordCompare) compareLeaf(path, concrete, typ string, a, b, c any) {
-	stats := r.field(path)
+	stats := r.field(valueKey(path, typ))
 	stats.typeName = typ
 	eqAB, _ := equalValues(a, b)
 	eqAC, formatAC := equalValues(a, c)
@@ -800,6 +807,7 @@ func (c *Comparator) Result() *Result {
 			cmp.Compare(x.Route, y.Route),
 			cmp.Compare(x.Path, y.Path),
 			cmp.Compare(x.Kind, y.Kind),
+			cmp.Compare(x.ValueType, y.ValueType),
 		)
 	}
 	slices.SortFunc(findings, compareFinding)
@@ -811,27 +819,28 @@ func (c *Comparator) Result() *Result {
 	result.Findings = findings
 
 	slices.SortFunc(result.Noise, func(x, y NoiseDecision) int {
-		return cmp.Or(cmp.Compare(x.Route, y.Route), cmp.Compare(x.Path, y.Path))
+		return cmp.Or(cmp.Compare(x.Route, y.Route), cmp.Compare(x.Path, y.Path), cmp.Compare(x.Type, y.Type))
 	})
 	if len(result.Noise) > c.cfg.Limits.MaxFindings {
 		result.Truncated.Noise = len(result.Noise) - c.cfg.Limits.MaxFindings
 		result.Noise = result.Noise[:c.cfg.Limits.MaxFindings]
 	}
 	slices.SortFunc(result.Ignored, func(x, y IgnoredField) int {
-		return cmp.Or(cmp.Compare(x.Route, y.Route), cmp.Compare(x.Path, y.Path))
+		return cmp.Or(cmp.Compare(x.Route, y.Route), cmp.Compare(x.Path, y.Path), cmp.Compare(x.Type, y.Type))
 	})
 	slices.SortFunc(result.Routes, func(x, y RouteSummary) int { return cmp.Compare(x.Route, y.Route) })
 	return result
 }
 
 func (c *Comparator) fieldFindings(route, key string, stats *fieldStats, findings []Finding, result *Result) []Finding {
-	path := strings.TrimSuffix(key, "#length")
+	path, valueType, _ := strings.Cut(key, "\x00")
 	add := func(kind Kind, count int, evidence *Evidence) {
 		findings = append(findings, Finding{
 			Severity:     kindSeverity[kind],
 			Kind:         kind,
 			Route:        route,
 			Path:         path,
+			ValueType:    valueType,
 			Count:        count,
 			Observations: stats.observations,
 			Evidence:     evidence,
@@ -841,7 +850,7 @@ func (c *Comparator) fieldFindings(route, key string, stats *fieldStats, finding
 		add(kind, count, stats.evidence[kind])
 	}
 	if stats.ignoredValues > 0 {
-		result.Ignored = append(result.Ignored, IgnoredField{Route: route, Path: path, Count: stats.ignoredValues})
+		result.Ignored = append(result.Ignored, IgnoredField{Route: route, Path: path, Type: valueType, Count: stats.ignoredValues})
 	}
 	if stats.ignoredStructure > 0 {
 		result.Ignored = append(result.Ignored, IgnoredField{Route: route, Path: path, Count: stats.ignoredStructure, Structure: true})

@@ -20,6 +20,8 @@ For each record, in this order:
    no longer the same kind of response.
 3. **Media type**, ignoring parameters such as `charset`.
 4. **Headers** listed in `compare_headers`. Others aren't compared, because many vary by nature.
+   Headers removed by sanitizing, such as `ETag` and `Content-Length`, are refused in the config,
+   since they could never show a difference.
 5. **The body.**
 
 ## Bodies
@@ -59,8 +61,9 @@ reasons other than the code, such as a timestamp or a generated ID.
 **Noise only ever explains differences in values.** Structure is checked first and separately,
 so a field the candidate removed or retyped is breaking however much its value varies.
 
-Each field is tracked separately per route, so noise on one route doesn't excuse a change on
-another. The decision compares two rates over all comparisons of that field on that route:
+Each field is tracked separately per route and per JSON type, so noise on one route doesn't
+excuse a change on another, and disagreement about a field's strings says nothing about a change
+to its numbers. The decision compares two rates over all such comparisons:
 
 - **Baseline rate:** how often A and B disagreed.
 - **Candidate rate:** how often the candidate differed from them. A candidate matching either
@@ -154,7 +157,8 @@ Reaching a limit never hides anything silently:
 - Past `max_findings`, the list is cut, the severity counts stay complete, and `truncated` says how
   many were left out. The most severe findings come first.
 - Past `max_fields_per_route` or `max_routes`, an uncertain notice appears in `limited`. Those fields
-  aren't checked, and those routes are grouped together under `(other routes)`.
+  aren't checked, and those routes are grouped together under `(other routes)`. `run` exits 2, because
+  part of the evidence wasn't compared.
 
 ## Known limits
 
