@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"strings"
 	"sync"
@@ -548,4 +549,73 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 			t.Errorf("%s: want error", name)
 		}
 	}
+}
+
+// An HTTP/2 server can finish shutting down while a handler for a reset stream is still
+// running, so capture can't rely on the server having waited. Close waits itself.
+func TestCloseWaitsForRequestsStillInFlight(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseUpstream := func() { releaseOnce.Do(func() { close(release) }) }
+	// A failed check mustn't leave the upstream handler blocked forever.
+	defer releaseUpstream()
+	arrived := make(chan struct{})
+	h := newHarness(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(arrived)
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/slow", nil)
+		h.capture.ServeHTTP(httptest.NewRecorder(), req)
+	}()
+	<-arrived
+
+	closed := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		closed <- h.capture.Close(ctx)
+	}()
+	select {
+	case err := <-closed:
+		t.Fatalf("Close returned while a request was in flight: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	releaseUpstream()
+	<-served
+	if err := <-closed; err != nil {
+		t.Fatal(err)
+	}
+	h.closed = true
+	h.proxy.Close()
+	if stats := h.capture.Stats(); stats.Persisted != 1 || len(stats.Dropped) != 0 {
+		t.Fatalf("stats = %+v", stats)
+	}
+}
+
+func TestCloseStopsWaitingAtItsDeadline(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	arrived := make(chan struct{})
+	h := newHarness(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		close(arrived)
+		<-release
+	}))
+	go h.capture.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/stuck", nil))
+	<-arrived
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := h.capture.Close(ctx)
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("Close took %v with a 100ms deadline", elapsed)
+	}
+	if !errors.Is(err, ErrShutdownDeadline) {
+		t.Fatalf("err = %v, want ErrShutdownDeadline", err)
+	}
+	h.closed = true
 }
