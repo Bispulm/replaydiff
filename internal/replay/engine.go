@@ -8,10 +8,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -65,6 +67,10 @@ type CallResult struct {
 	Status        int         `json:"status,omitempty"`
 	LatencyMicros int64       `json:"latency_us"`
 	BodyBytes     int64       `json:"body_bytes"`
+	// Proto is the protocol the response actually arrived on.
+	Proto string `json:"proto,omitempty"`
+	// Attempts counts how many times the request was written to the target.
+	Attempts int `json:"attempts"`
 	// Header and Body are unsanitized target output. They're for in-process
 	// comparison and are deliberately never serialized.
 	Header http.Header `json:"-"`
@@ -86,6 +92,11 @@ type TargetSummary struct {
 	Calls    int64            `json:"calls"`
 	Outcomes map[string]int64 `json:"outcomes,omitempty"`
 	Statuses map[string]int64 `json:"statuses,omitempty"`
+	// Protocols counts responses by the protocol they arrived on.
+	Protocols map[string]int64 `json:"protocols,omitempty"`
+	// Resends counts requests the HTTP client sent again by itself. See
+	// docs/replay.md for when that happens.
+	Resends int64 `json:"resends,omitempty"`
 }
 
 // Summary accounts for every record in a dataset.
@@ -224,20 +235,35 @@ func New(cfg Config) (*Engine, error) {
 		if err := validateTargetHeaders(role.String(), tc.Headers); err != nil {
 			return nil, err
 		}
+		if cfg.H2C && u.Scheme != "http" {
+			return nil, fmt.Errorf("replay: %s: h2c needs an http:// target; https negotiates HTTP/2 by itself", role)
+		}
 		e.targets[i] = newTarget(role, u, tc.Headers, cfg)
 	}
 	return e, nil
 }
 
 func newTarget(role Role, origin *url.URL, headers http.Header, cfg Config) *target {
+	protocols := new(http.Protocols)
+	if cfg.H2C {
+		// Only this: with HTTP/1 also enabled, the transport would use HTTP/1.
+		protocols.SetUnencryptedHTTP2(true)
+	} else {
+		protocols.SetHTTP1(true)
+		protocols.SetHTTP2(true)
+	}
 	transport := &http.Transport{
+		Protocols: protocols,
+		// Each target needs its own copy, because net/http writes to this during
+		// HTTP/2 setup.
+		TLSClientConfig: cfg.TLS.Clone(),
 		// Destinations are explicit. An ambient proxy variable mustn't send
 		// recorded traffic and credentials somewhere else.
 		Proxy: nil,
-		// net/http silently resends a safe request if a reused connection fails,
-		// which would make one record into two calls that nothing counts. It can
-		// only do that on a reused connection, so none are reused. This costs a
-		// connection per call, paid equally by all three targets.
+		// Over HTTP/1.1, net/http silently resends a safe request if a reused
+		// connection fails, even if the target already acted on it. It can only do
+		// that on a reused connection, so none are reused. This costs a connection
+		// per call, paid equally by all three targets.
 		DisableKeepAlives:     true,
 		DialContext:           (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
 		TLSHandshakeTimeout:   5 * time.Second,
@@ -454,6 +480,10 @@ func (e *Engine) replayRecord(ctx context.Context, ds *traffic.Dataset, entry tr
 			target.Outcomes = increment(target.Outcomes, string(call.Outcome))
 			if call.Status != 0 {
 				target.Statuses = increment(target.Statuses, fmt.Sprintf("%dxx", call.Status/100))
+				target.Protocols = increment(target.Protocols, call.Proto)
+			}
+			if call.Attempts > 1 {
+				target.Resends += int64(call.Attempts - 1)
 			}
 			sum.UpstreamCalls++
 		}
@@ -512,7 +542,13 @@ func (e *Engine) call(ctx context.Context, t *target, rec *traffic.Record) CallR
 
 	callCtx, cancel := context.WithTimeout(ctx, e.cfg.Timeout)
 	defer cancel()
-	req, err := buildRequest(callCtx, t, rec)
+	// Go's HTTP/2 client resends a request when the server says it didn't process
+	// it, and that can't be disabled. Counting writes keeps it from being invisible.
+	var attempts atomic.Int32
+	traced := httptrace.WithClientTrace(callCtx, &httptrace.ClientTrace{
+		WroteHeaders: func() { attempts.Add(1) },
+	})
+	req, err := buildRequest(traced, t, rec)
 	if err != nil {
 		result.Outcome = CallInvalidRequest
 		return result
@@ -522,13 +558,16 @@ func (e *Engine) call(ctx context.Context, t *target, rec *traffic.Record) CallR
 	resp, err := t.client.Do(req)
 	if err != nil {
 		result.LatencyMicros = time.Since(start).Microseconds()
+		result.Attempts = int(attempts.Load())
 		result.Outcome = classifyError(ctx, callCtx, err)
 		return result
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, e.cfg.MaxResponseBytes+1))
 	result.LatencyMicros = time.Since(start).Microseconds()
+	result.Attempts = int(attempts.Load())
 	result.Status = resp.StatusCode
+	result.Proto = resp.Proto
 	result.BodyBytes = int64(len(body))
 	switch {
 	case err != nil:
