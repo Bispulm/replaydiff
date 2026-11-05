@@ -48,6 +48,7 @@ var quick = settings{
 
 // Results holds every measurement, with the conditions it was taken under.
 type Results struct {
+	Ran         []string       `json:"measured"`
 	Environment Environment    `json:"environment"`
 	Settings    settings       `json:"settings"`
 	Latency     []LatencyRound `json:"latency_rounds"`
@@ -93,6 +94,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	binary := fs.String("capture", "bin/replaydiff", "the replaydiff binary to measure")
 	out := fs.String("out", ".bench", "directory for results.json and results.md")
 	short := fs.Bool("quick", false, "tiny workloads, to check the harness rather than measure")
+	only := fs.String("only", "", "run one measurement: latency, drops, steps, replay or fairness")
+	rounds := fs.Int("rounds", 0, "latency rounds, if not the default")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -100,11 +103,22 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if *short {
 		cfg = quick
 	}
+	if *rounds > 0 {
+		cfg.Rounds = *rounds
+	}
+	selected := []string{"latency", "drops", "steps", "replay", "fairness"}
+	if *only != "" {
+		if !slices.Contains(selected, *only) {
+			fmt.Fprintf(stderr, "--only: unknown measurement %q\n", *only)
+			return 2
+		}
+		selected = []string{*only}
+	}
 	if err := os.MkdirAll(*out, 0o755); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	results, err := measure(ctx, cfg, *binary, stderr)
+	results, err := measure(ctx, cfg, *binary, selected, stderr)
 	if err != nil {
 		fmt.Fprintln(stderr, "replaydiff-bench:", err)
 		return 2
@@ -124,7 +138,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func measure(ctx context.Context, cfg settings, binary string, log io.Writer) (*Results, error) {
+func measure(ctx context.Context, cfg settings, binary string, selected []string, log io.Writer) (*Results, error) {
 	work, err := os.MkdirTemp("", "replaydiff-bench-")
 	if err != nil {
 		return nil, err
@@ -135,7 +149,8 @@ func measure(ctx context.Context, cfg settings, binary string, log io.Writer) (*
 		return nil, err
 	}
 	defer closeUpstream()
-	results := &Results{Settings: cfg, Environment: environment()}
+	results := &Results{Settings: cfg, Environment: environment(), Ran: selected}
+	want := func(name string) bool { return slices.Contains(selected, name) }
 	results.Environment.LoadBefore = loadAverage()
 
 	capture := func(name string) (*captureProcess, error) {
@@ -146,10 +161,51 @@ func measure(ctx context.Context, cfg settings, binary string, log io.Writer) (*
 		return startCapture(binary, upstream, dir)
 	}
 
+	if want("latency") {
+		if err := measureLatency(ctx, cfg, upstream, capture, results, log); err != nil {
+			return nil, err
+		}
+	}
+	if want("drops") {
+		fmt.Fprintln(log, "drops: sustained load through capture")
+		proc, err := capture("drops")
+		if err != nil {
+			return nil, err
+		}
+		results.Drops.Phase = openLoop(ctx, proc.proxy, cfg.DropRate, cfg.DropPhase, cfg.Connections)
+		results.Drops.Phase.Target = "proxied"
+		if results.Drops.Capture, err = proc.stop(); err != nil {
+			return nil, err
+		}
+	}
+	if want("steps") {
+		if err := measureSteps(ctx, cfg, upstream, capture, results, log); err != nil {
+			return nil, err
+		}
+	}
+	if want("replay") {
+		fmt.Fprintln(log, "replay rate")
+		if results.Replay, err = measureReplay(ctx, work, cfg.ReplayRecords); err != nil {
+			return nil, err
+		}
+	}
+	if want("fairness") {
+		fmt.Fprintln(log, "fairness")
+		if results.Fairness, err = measureFairness(ctx, work, cfg.FairLong, cfg.FairShort, cfg.FE); err != nil {
+			return nil, err
+		}
+	}
+	results.Environment.LoadAfter = loadAverage()
+	return results, ctx.Err()
+}
+
+type startFunc func(name string) (*captureProcess, error)
+
+func measureLatency(ctx context.Context, cfg settings, upstream string, capture startFunc, results *Results, log io.Writer) error {
 	fmt.Fprintln(log, "latency: direct and proxied phases")
 	proc, err := capture("latency")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	// A short warm-up of each, discarded.
 	openLoop(ctx, upstream, cfg.Rate, cfg.Phase/10+time.Second, cfg.Connections)
@@ -161,30 +217,22 @@ func measure(ctx context.Context, cfg settings, binary string, log io.Writer) (*
 		results.Latency = append(results.Latency, LatencyRound{Direct: direct, Proxied: proxied,
 			AddedP50ms: proxied.P50 - direct.P50, AddedP99ms: proxied.P99 - direct.P99})
 	}
-	if _, err := proc.stop(); err != nil {
-		return nil, err
-	}
+	_, err = proc.stop()
+	return err
+}
 
-	fmt.Fprintln(log, "drops: sustained load through capture")
-	if proc, err = capture("drops"); err != nil {
-		return nil, err
-	}
-	results.Drops.Phase = openLoop(ctx, proc.proxy, cfg.DropRate, cfg.DropPhase, cfg.Connections)
-	results.Drops.Phase.Target = "proxied"
-	if results.Drops.Capture, err = proc.stop(); err != nil {
-		return nil, err
-	}
-
+func measureSteps(ctx context.Context, cfg settings, upstream string, capture startFunc, results *Results, log io.Writer) error {
 	for i, rate := range cfg.Steps {
 		fmt.Fprintf(log, "steps: %.0f/s\n", rate)
-		if proc, err = capture("step-" + strconv.Itoa(i)); err != nil {
-			return nil, err
+		proc, err := capture("step-" + strconv.Itoa(i))
+		if err != nil {
+			return err
 		}
 		step := Step{Direct: openLoop(ctx, upstream, rate, cfg.Step, cfg.Connections)}
 		step.Proxied = openLoop(ctx, proc.proxy, rate, cfg.Step, cfg.Connections)
 		step.Direct.Target, step.Proxied.Target = "direct", "proxied"
 		if step.Capture, err = proc.stop(); err != nil {
-			return nil, err
+			return err
 		}
 		step.Sustainable = step.Capture.DroppedTotal() == 0 && step.Proxied.Errors == 0 &&
 			step.Proxied.Achieved >= 0.95*rate && step.Proxied.P99-step.Direct.P99 <= 10
@@ -193,17 +241,7 @@ func measure(ctx context.Context, cfg settings, binary string, log io.Writer) (*
 			break
 		}
 	}
-
-	fmt.Fprintln(log, "replay rate")
-	if results.Replay, err = measureReplay(ctx, work, cfg.ReplayRecords); err != nil {
-		return nil, err
-	}
-	fmt.Fprintln(log, "fairness")
-	if results.Fairness, err = measureFairness(ctx, work, cfg.FairLong, cfg.FairShort, cfg.FE); err != nil {
-		return nil, err
-	}
-	results.Environment.LoadAfter = loadAverage()
-	return results, ctx.Err()
+	return nil
 }
 
 // Environment is what the numbers depend on.
@@ -284,20 +322,31 @@ func (r *Results) Markdown() string {
 			sustainable = step.Proxied.Offered
 		}
 	}
+	ran := func(name string) bool { return slices.Contains(r.Ran, name) }
 	b.WriteString("| Measure | Result | Target | Verdict |\n|---|---|---|---|\n")
-	fmt.Fprintf(&b, "| Latency added at %.0f/s, median of %d rounds | p50 %+.2f ms, p99 %+.2f ms | p50 at most 1 ms, p99 at most 5 ms | %s |\n",
-		r.Settings.Rate, len(r.Latency), m50, m99, verdict(m50 <= 1 && m99 <= 5))
-	fmt.Fprintf(&b, "| Drops at %.0f/s for %s | %d of %d exchanges, %d errors | None | %s |\n",
-		r.Settings.DropRate, r.Settings.DropPhase, r.Drops.Capture.DroppedTotal(), r.Drops.Capture.Observed, r.Drops.Phase.Errors,
-		verdict(r.Drops.Capture.DroppedTotal() == 0 && r.Drops.Phase.Errors == 0))
-	fmt.Fprintf(&b, "| Highest sustainable recording rate | %.0f/s | At least 2,000/s | %s |\n", sustainable, verdict(sustainable >= 2000))
-	rss := float64(r.Drops.Capture.PeakRSSBytes) / (1 << 20)
-	fmt.Fprintf(&b, "| Capture peak resident set, %.0f/s run | %.0f MiB | At most 300 MiB | %s |\n", r.Settings.DropRate, rss, verdict(rss <= 300))
-	fmt.Fprintf(&b, "| Replay rate, %d records | %.0f records/s, %.0f calls/s | At least 300 records/s | %s |\n",
-		r.Replay.Records, r.Replay.RecordsPerSecond, r.Replay.CallsPerSecond, verdict(r.Replay.RecordsPerSecond >= 300 && r.Replay.Complete))
-	fmt.Fprintf(&b, "| Fairness, %d-record session and %d of %d records | last short session done at %.0f%% of the run | Within 30%% | %s |\n\n",
-		r.Fairness.LongRecords, r.Fairness.ShortSessions, r.Fairness.ShortRecords, 100*r.Fairness.LastShortFinishShare, verdict(r.Fairness.LastShortFinishShare <= 0.30))
-
+	if ran("latency") {
+		fmt.Fprintf(&b, "| Latency added at %.0f/s, median of %d rounds | p50 %+.2f ms, p99 %+.2f ms | p50 at most 1 ms, p99 at most 5 ms | %s |\n",
+			r.Settings.Rate, len(r.Latency), m50, m99, verdict(m50 <= 1 && m99 <= 5))
+	}
+	if ran("drops") {
+		fmt.Fprintf(&b, "| Drops at %.0f/s for %s | %d of %d exchanges, %d errors | None | %s |\n",
+			r.Settings.DropRate, r.Settings.DropPhase, r.Drops.Capture.DroppedTotal(), r.Drops.Capture.Observed, r.Drops.Phase.Errors,
+			verdict(r.Drops.Capture.DroppedTotal() == 0 && r.Drops.Phase.Errors == 0))
+		rss := float64(r.Drops.Capture.PeakRSSBytes) / (1 << 20)
+		fmt.Fprintf(&b, "| Capture peak resident set, %.0f/s run | %.0f MiB | At most 300 MiB | %s |\n", r.Settings.DropRate, rss, verdict(rss <= 300))
+	}
+	if ran("steps") {
+		fmt.Fprintf(&b, "| Highest sustainable recording rate | %.0f/s | At least 2,000/s | %s |\n", sustainable, verdict(sustainable >= 2000))
+	}
+	if ran("replay") {
+		fmt.Fprintf(&b, "| Replay rate, %d records | %.0f records/s, %.0f calls/s | At least 300 records/s | %s |\n",
+			r.Replay.Records, r.Replay.RecordsPerSecond, r.Replay.CallsPerSecond, verdict(r.Replay.RecordsPerSecond >= 300 && r.Replay.Complete))
+	}
+	if ran("fairness") {
+		fmt.Fprintf(&b, "| Fairness, %d-record session and %d of %d records | last short session done at %.0f%% of the run | Within 30%% | %s |\n",
+			r.Fairness.LongRecords, r.Fairness.ShortSessions, r.Fairness.ShortRecords, 100*r.Fairness.LastShortFinishShare, verdict(r.Fairness.LastShortFinishShare <= 0.30))
+	}
+	b.WriteString("\n")
 	b.WriteString("| Phase | Offered/s | Achieved/s | Errors | p50 ms | p90 ms | p99 ms | max ms |\n|---|---|---|---|---|---|---|---|\n")
 	row := func(label string, p Phase) {
 		fmt.Fprintf(&b, "| %s | %.0f | %.0f | %d | %.2f | %.2f | %.2f | %.2f |\n", label, p.Offered, p.Achieved, p.Errors, p.P50, p.P90, p.P99, p.Max)
