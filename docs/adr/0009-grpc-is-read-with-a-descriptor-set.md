@@ -55,8 +55,8 @@ protects.
 ## Consequences
 
 - Users must build and supply the descriptor set, and keep it matched to the recordings.
-- A server newer than the set can add fields, which makes its messages unknown-field bodies. Captured
-  responses aren't stored then, though replay still compares fresh ones, where unknown fields are
-  compared by presence. Captured requests aren't replayable until the set is updated.
+- A server newer than the set can add fields, which makes its messages unknown-field bodies. They aren't
+  stored, and their records aren't replayable until the set is updated. The report counts them by
+  reason. During a replay, fields a candidate adds are compared by presence.
 - Streaming calls are forwarded but not stored or replayed.
 - Replay can't exercise a client's gRPC retry behavior, which is outside what it tests.
