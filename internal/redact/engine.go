@@ -100,13 +100,15 @@ var hopByHopHeaders = map[string]bool{
 // bodyDerivedHeaders describe the original bytes rather than the stored ones.
 // A stored digest could also be used to confirm guesses at a redacted value.
 var bodyDerivedHeaders = map[string]bool{
-	"Content-Length":   true,
-	"Content-Encoding": true,
-	"Content-Md5":      true,
-	"Digest":           true,
-	"Content-Digest":   true,
-	"Repr-Digest":      true,
-	"Etag":             true,
+	"Content-Length":       true,
+	"Content-Encoding":     true,
+	"Grpc-Encoding":        true,
+	"Grpc-Accept-Encoding": true,
+	"Content-Md5":          true,
+	"Digest":               true,
+	"Content-Digest":       true,
+	"Repr-Digest":          true,
+	"Etag":                 true,
 }
 
 // HeaderIsDropped reports whether a header is never kept, whatever the policy, because
@@ -304,9 +306,23 @@ func (e *Engine) Headers(location Location, h http.Header, hits *Hits) map[strin
 	return out
 }
 
+// opaqueHeaders can hold anything and can't be checked against rules: grpc-message is
+// free text that servers fill with whatever went wrong, and the details are binary.
+var opaqueHeaders = map[string]string{
+	"Grpc-Message":            "grpc-message",
+	"Grpc-Status-Details-Bin": "binary-metadata",
+}
+
 func (e *Engine) headerRule(name string) string {
 	if rule, ok := e.headers[name]; ok {
 		return rule
+	}
+	if rule, ok := opaqueHeaders[name]; ok {
+		return rule
+	}
+	// gRPC binary metadata is base64, which no rule can look inside.
+	if strings.HasSuffix(name, "-Bin") {
+		return "binary-metadata"
 	}
 	lower := strings.ToLower(name)
 	for _, part := range sensitiveNameParts {
