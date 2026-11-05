@@ -256,6 +256,24 @@ func TestGRPCErrorsAreRecordedWithoutTheirMessage(t *testing.T) {
 	h.assertNoSecret(secret)
 }
 
+// An error with no message is Trailers-Only: one HEADERS frame that ends the stream. The
+// proxy once flushed those headers early, in a frame of their own, so the client saw a
+// stream end without trailers and turned a real status into INTERNAL. It was a race, so
+// one call rarely shows it.
+func TestTrailersOnlyErrorsReachTheClientIntact(t *testing.T) {
+	g := newGRPCPath(t, grpcPolicy, true, func(context.Context, *dynamicpb.Message) (proto.Message, error) {
+		return nil, status.Error(codes.NotFound, "no such order")
+	})
+	for i := range 300 {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_, err := g.getOrder(ctx, `{"id":"ord-missing"}`)
+		cancel()
+		if status.Code(err) != codes.NotFound {
+			t.Fatalf("call %d: %v", i, err)
+		}
+	}
+}
+
 func TestCompressedGRPCMessagesAreStoredDecompressed(t *testing.T) {
 	g := newGRPCPath(t, grpcPolicy, true, func(context.Context, *dynamicpb.Message) (proto.Message, error) {
 		return orderMessage(t, grpcSet(t), `{"id":"ord-1","note":"`+strings.Repeat("compressible ", 50)+`"}`), nil

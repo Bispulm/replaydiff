@@ -326,6 +326,9 @@ type exchange struct {
 	hasResponse bool
 	upgraded    bool
 	proxyFailed bool
+	// emptyResponse means the upstream ended the response in its headers. It is set
+	// before the proxy starts copying, which is when flushing can begin.
+	emptyResponse bool
 
 	headersAfter time.Duration
 	total        time.Duration
@@ -376,8 +379,30 @@ func (c *Capture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			panic(failure)
 		}
 	}()
-	c.proxy.ServeHTTP(w, forwarded)
+	c.proxy.ServeHTTP(&flushGate{ResponseWriter: w, ex: ex}, forwarded)
 }
+
+// flushGate withholds flushes of a response the upstream ended in its headers. The proxy
+// flushes headers at once, so that streamed bodies aren't held back, but over HTTP/2 that
+// sends them in a frame that doesn't end the stream. A gRPC Trailers-Only response then
+// reaches the client as headers followed by a stream with no trailers, and the client
+// reports INTERNAL instead of the real status. With no body to wait for, the headers go
+// out when the handler returns, in one frame that ends the stream.
+type flushGate struct {
+	http.ResponseWriter
+	ex *exchange
+}
+
+func (f *flushGate) Flush() {
+	if f.ex.emptyResponse {
+		return
+	}
+	_ = http.NewResponseController(f.ResponseWriter).Flush()
+}
+
+// Unwrap lets http.ResponseController reach the server's writer, for hijacking an
+// upgraded connection, for example.
+func (f *flushGate) Unwrap() http.ResponseWriter { return f.ResponseWriter }
 
 func (c *Capture) onResponse(res *http.Response) error {
 	ex, _ := res.Request.Context().Value(exchangeKey{}).(*exchange)
@@ -392,6 +417,7 @@ func (c *Capture) onResponse(res *http.Response) error {
 		return nil
 	}
 	ex.hasResponse = true
+	ex.emptyResponse = res.ContentLength == 0
 	ex.response = res
 	ex.status = res.StatusCode
 	ex.resHeader = res.Header.Clone()
