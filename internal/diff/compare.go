@@ -869,16 +869,25 @@ func (c *Comparator) fieldFindings(route, key string, stats *fieldStats, finding
 		BaselineRate:          float64(stats.baselineDisagree) / float64(stats.observations),
 		CandidateRate:         float64(differences) / float64(stats.observations),
 	}
+	// A gap within the margin is noise. A larger gap is only a real difference if the
+	// two rates can be told apart at this many observations. If they can't, the honest
+	// answer is that more evidence is needed.
+	_, baselineHigh := wilsonInterval(stats.baselineDisagree, stats.observations)
+	candidateLow, _ := wilsonInterval(differences, stats.observations)
+	gap := decision.CandidateRate - decision.BaselineRate
 	switch {
 	case stats.observations < c.cfg.Noise.MinObservations:
 		decision.Decision = NoiseInsufficient
 		add(KindInsufficientEvidence, stats.baselineDisagree, stats.evidence[KindNoiseExplained])
-	case decision.CandidateRate-decision.BaselineRate > c.cfg.Noise.Margin:
+	case gap <= c.cfg.Noise.Margin:
+		decision.Decision = NoiseExplained
+		add(KindNoiseExplained, stats.baselineDisagree, stats.evidence[KindNoiseExplained])
+	case candidateLow > baselineHigh:
 		decision.Decision = NoiseExceeded
 		add(KindValueChangedBeyondNoise, differences, stats.evidence[KindValueChanged])
 	default:
-		decision.Decision = NoiseExplained
-		add(KindNoiseExplained, stats.baselineDisagree, stats.evidence[KindNoiseExplained])
+		decision.Decision = NoiseInsufficient
+		add(KindInsufficientEvidence, stats.baselineDisagree, stats.evidence[KindNoiseExplained])
 	}
 	result.Noise = append(result.Noise, decision)
 	return findings
@@ -938,4 +947,18 @@ func (c *Comparator) routeSummary(route string, state *routeState, findings *[]F
 		summary.Latency.Percentiles = append(summary.Latency.Percentiles, row)
 	}
 	return summary
+}
+
+// wilsonInterval returns the 95% Wilson score interval for a rate. Unlike the simpler
+// normal approximation, it behaves sensibly at rates of 0 and 1 and on few observations,
+// which is exactly where noise decisions are made.
+func wilsonInterval(successes, n int) (low, high float64) {
+	const z = 1.959964
+	rate := float64(successes) / float64(n)
+	count := float64(n)
+	denominator := 1 + z*z/count
+	center := (rate + z*z/(2*count)) / denominator
+	spread := z * math.Sqrt(rate*(1-rate)/count+z*z/(4*count*count)) / denominator
+	// Clamped to contain the rate itself, which rounding can otherwise push just outside.
+	return min(max(center-spread, 0), rate), max(min(center+spread, 1), rate)
 }
