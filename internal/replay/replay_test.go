@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -836,6 +837,40 @@ func TestCandidateTimeoutIsAnOutcomeAndReplayContinues(t *testing.T) {
 	// A candidate failure is what the tool exists to find, not missing evidence.
 	if !summary.Complete() {
 		t.Fatalf("problems = %v", summary.Problems())
+	}
+}
+
+type connCalls struct{}
+
+// A server may close a kept-alive connection just as a request is written to it.
+// A transport reusing connections treats that as a stale connection and silently
+// resends safe methods, so the target can act twice on one record. This server
+// forces that: it reads a second request on any connection, counts it, and hangs up.
+func TestStaleConnectionsCannotCauseASecondCall(t *testing.T) {
+	var calls atomic.Int64
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		onConn := r.Context().Value(connCalls{}).(*atomic.Int64)
+		if onConn.Add(1) > 1 {
+			if conn, _, err := http.NewResponseController(w).Hijack(); err == nil {
+				_ = conn.Close()
+			}
+		}
+	}))
+	server.Config.ConnContext = func(ctx context.Context, _ net.Conn) context.Context {
+		return context.WithValue(ctx, connCalls{}, new(atomic.Int64))
+	}
+	server.Start()
+	defer server.Close()
+
+	c := newCluster(t, nil)
+	cfg := c.config()
+	cfg.Candidate.URL = server.URL
+	cfg.AllowedOrigins = []string{c.a.URL, c.b.URL, server.URL}
+	cfg.Concurrency = 3 // One record at a time, so each can reuse the last connection.
+	summary, _ := mustRun(t, mustEngine(t, cfg), scan(t, writeDataset(t, make([]spec, 4))))
+	if got := calls.Load(); got != 4 {
+		t.Fatalf("target received %d calls for 4 records, and the summary counted %d", got, summary.Targets["candidate"].Calls)
 	}
 }
 

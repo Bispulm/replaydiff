@@ -92,6 +92,11 @@ per second in total. The report shows both `records_per_second` and
 retry would change the load and repeat side effects. A timeout is a recorded outcome,
 and unrelated records carry on.
 
+That includes retries the HTTP client would otherwise do by itself. Go's transport
+silently resends a safe request when a reused connection fails, so replay doesn't reuse
+connections. Each call opens a new one, and all three targets pay that cost equally.
+Its effect on latency and maximum replay rate hasn't been measured yet.
+
 ## Credentials
 
 Redacted headers are never sent, and the placeholder is never used as a value. Supply

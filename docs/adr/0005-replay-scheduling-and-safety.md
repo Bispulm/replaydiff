@@ -20,7 +20,10 @@ surprising load or duplicate side effects.
 - **Take the per-target permit before the global one.** A saturated target then can't
   sit on global permits that other targets could use.
 - **`--rps` counts logical records**, and the report states both rates.
-- **No retries.** One record is exactly one call per target.
+- **No retries, including the transport's own.** One record is exactly one call per
+  target. Go's transport resends safe requests when a reused connection fails, so
+  connections aren't reused. A test confirmed that with reuse, 4 records could become
+  7 real calls while the summary still reported 4.
 - **Two passes over the dataset.** `Scan` validates everything and builds an index, so
   unknown versions and damage are found before any traffic is sent, and arrival order
   can be restored. Bodies are loaded when needed.
@@ -40,6 +43,9 @@ into a passing run. Any baseline failure makes the evidence incomplete instead.
 ## Consequences
 
 - A slow target slows every session, by design. The timeout bounds how much.
+- Every call opens a new connection. Local port exhaustion and TLS handshake cost may
+  limit the maximum replay rate. This must be measured before it's optimized, and any
+  replacement has to keep the one-record-one-call guarantee.
 - A session with many records holds an active slot for its whole length, and sessions
   beyond the limit wait for a free slot.
 - The index needs memory per record, so datasets have an explicit size limit, and
