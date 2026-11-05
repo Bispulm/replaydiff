@@ -20,6 +20,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -383,6 +384,26 @@ func TestMalformedGRPCRequestIsForwardedButNotStored(t *testing.T) {
 	}
 	h := &harness{t: t, dir: g.dir, logs: g.logs, closed: true}
 	h.assertNoSecret(secret)
+}
+
+// A response whose map entry repeats its key with the wrong wire type made protobuf-go
+// panic while sanitizing, so the whole record was dropped. It's kept, without the body.
+func TestAMessageTheDecoderPanicsOnDoesNotStopCapture(t *testing.T) {
+	entry := protowire.AppendTag(nil, 1, protowire.BytesType)
+	entry = protowire.AppendString(entry, "k")
+	entry = protowire.AppendTag(entry, 1, protowire.VarintType)
+	entry = protowire.AppendVarint(entry, 0)
+	clobbered := protowire.AppendBytes(protowire.AppendTag(nil, 7, protowire.BytesType), entry)
+	g := newGRPCPath(t, grpcPolicy, true, func(context.Context, *dynamicpb.Message) (proto.Message, error) {
+		order := orderMessage(t, grpcSet(t), `{"id":"x"}`)
+		order.SetUnknown(clobbered)
+		return order, nil
+	})
+	rawGRPC(t, g, "application/grpc", grpcwire.AppendFrame(nil, nil, false))
+	rec := g.records()[0]
+	if rec.Replay.Eligible || rec.Response.Body.State != traffic.BodyOmitted || rec.Response.Body.Reason != redact.ReasonProtoMalformed {
+		t.Fatalf("response %+v, replay %+v", rec.Response.Body, rec.Replay)
+	}
 }
 
 func TestGRPCWithAnotherCodecIsNotStored(t *testing.T) {

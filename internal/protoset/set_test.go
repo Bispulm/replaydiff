@@ -7,8 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 const fixtureSet = "../fixture/proto/orders.binpb"
@@ -159,5 +161,33 @@ func TestAnyResolvesOnlyTypesInTheSet(t *testing.T) {
 		if _, err := set.MessageByURL(url); err == nil {
 			t.Errorf("MessageByURL(%q): want error", url)
 		}
+	}
+}
+
+// protobuf-go v1.36.12 panics decoding a map entry, in a dynamic message, that repeats its
+// key with the wrong wire type. Untrusted bytes must fail to decode instead.
+func TestUnmarshalReportsADecoderPanicAsAnError(t *testing.T) {
+	set, err := Load(fixtureSet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := set.MessageByURL("type.googleapis.com/fixture.orders.v1.Order")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := protowire.AppendTag(nil, 1, protowire.BytesType)
+	entry = protowire.AppendString(entry, "k")
+	entry = protowire.AppendTag(entry, 1, protowire.VarintType)
+	entry = protowire.AppendVarint(entry, 0)
+	data := protowire.AppendBytes(protowire.AppendTag(nil, 7, protowire.BytesType), entry)
+
+	if err := Unmarshal(data, dynamicpb.NewMessage(descriptor)); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("err = %v, want ErrMalformed", err)
+	}
+	if err := Unmarshal([]byte{0xff}, dynamicpb.NewMessage(descriptor)); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("err = %v, want ErrMalformed for ordinary bad input", err)
+	}
+	if err := Unmarshal(nil, dynamicpb.NewMessage(descriptor)); err != nil {
+		t.Fatalf("err = %v for an empty message", err)
 	}
 }
