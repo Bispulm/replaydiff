@@ -221,7 +221,12 @@ func runRun(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "warning: %s: the HTTP client resent %d request(s) the server said it hadn't processed\n", role, n)
 		}
 	}
-	if !report.EvidenceComplete {
+	// A reached limit means part of the evidence wasn't compared. It stays out of the
+	// report's problems so that CI policy can decide how to treat it.
+	for _, notice := range comparison.Limited {
+		fmt.Fprintf(stderr, "incomplete: %s on %s: %s\n", notice.Kind, notice.Route, notice.Detail)
+	}
+	if !report.EvidenceComplete || len(comparison.Limited) > 0 {
 		for _, problem := range report.Problems {
 			fmt.Fprintf(stderr, "incomplete: %s\n", problem)
 		}
