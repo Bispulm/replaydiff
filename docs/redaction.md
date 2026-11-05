@@ -36,12 +36,13 @@ headers: [X-Internal-Id]
 query_params: [token, password]
 json_paths: ["$.user.email", "$.items[*].card", "$..password"]
 opaque_content_types: [text/plain]
+proto_fields: [fixture.orders.v1.Customer.email]
 session:
   sources: ["cookie:sid", "header:X-Session-Id", "query:session"]
 ```
 
 Unknown keys are errors, because ignoring a misspelled rule would silently leave
-data unprotected. `proto_fields` is refused until protobuf support exists.
+data unprotected.
 
 ## Query parameters
 
@@ -86,6 +87,50 @@ Bodies are parsed and re-encoded rather than patched, which has these effects:
 - Escaped names such as `email` are matched.
 - Numbers keep their exact text, so precision isn't lost.
 - Object key order and insignificant whitespace aren't preserved.
+
+## Protobuf fields
+
+`proto_fields` names fields of gRPC messages by their full name in the descriptor set given
+with `--descriptor-set`:
+
+```yaml
+proto_fields:
+  - fixture.orders.v1.Customer.email
+  - fixture.orders.v1.GetOrderRequest.auth_token
+```
+
+A rule follows its message type, not a path. It applies wherever that message appears, in
+requests and responses: at any depth, in lists, in map values, and inside a
+`google.protobuf.Any` whose type the set has.
+
+| Field | Result |
+|---|---|
+| `string` or `bytes` | Replaced with `[REDACTED]` |
+| Any other scalar, an enum or a message | Cleared |
+| Repeated or map | Emptied |
+
+A field the set doesn't have is refused at startup, and so is `proto_fields` without
+`--descriptor-set`, because a rule that matches nothing would protect nothing.
+
+Messages are decoded and encoded again, deterministically. A message is never stored as it
+arrived:
+
+| Condition | Reason | Replayable if it's the request |
+|---|---|---|
+| No descriptor set, or a method it doesn't have | `proto_descriptor_missing`, `proto_method_unknown` | No |
+| More than one message, or a streaming method | `grpc_streaming` | No |
+| Incomplete framing, or the compressed flag with no encoding | `grpc_malformed_frame` | No |
+| Bytes that don't decode as the message | `proto_malformed` | No |
+| Fields the set doesn't describe | `proto_unknown_fields` | No |
+| An `Any` of a type outside the set | `proto_any_unresolved` | No |
+
+Unknown fields and foreign `Any` values are bytes that no rule can see into, so the whole
+message is omitted rather than stored with them. An omitted response keeps its request
+replayable, as for other bodies.
+
+gRPC metadata goes through the header rules. `grpc-message`, which servers fill with whatever
+went wrong, and binary metadata such as `grpc-status-details-bin` are always replaced, because
+no rule can check what they hold.
 
 ## What happens when a body can't be sanitized
 
@@ -136,7 +181,7 @@ was removed may now get a 401, and a redacted ID may no longer resolve.
 ## Known limits
 
 - Secrets in URL paths, such as `/reset/abc123`, are not covered.
-- Secrets in header names or JSON object keys are not covered.
+- Secrets in header names, JSON object keys or protobuf map keys are not covered.
 - Secrets inside a string that holds encoded JSON or base64 are not covered.
 - Query and form rules don't look inside bodies of other types.
 - Opaque content types are stored as they are.

@@ -42,7 +42,8 @@ Having been captured doesn't make a request safe to replay.
 | CONNECT, TRACE | Can't be allowed | |
 | Capture marked it unreplayable | Skipped | The reason capture recorded |
 | Claims to be eligible but has no stored body | Skipped | `request_body_unavailable` |
-| gRPC | Skipped, even if POST is allowed | `unsupported_protocol` |
+| gRPC method not listed in `--allow-rpc` | Skipped, even if POST is allowed | `grpc_method_not_allowed` |
+| gRPC, recorded with another descriptor set | Skipped | `descriptor_mismatch` |
 
 `--allow-method POST` repeats side effects on all three targets. Use it only against
 disposable environments.
@@ -140,7 +141,7 @@ its policy allows them.
 
 ## Current limits
 
-- gRPC is planned. HTTP/1.1 and HTTP/2 are described in [protocols](protocols.md).
+- Only unary gRPC is replayed. Protocols are described in [protocols](protocols.md).
 - Request trailers in a recording aren't sent.
 - The report's samples include request paths, which redaction doesn't cover. See
   [redaction limits](redaction.md#known-limits).
