@@ -16,6 +16,9 @@ const (
 	ReasonMemoryBudget = "memory_budget"
 	// ReasonIncomplete means the body wasn't seen through to its end.
 	ReasonIncomplete = "incomplete_on_wire"
+	// ReasonGRPCUnsupportedCodec means a gRPC call carried messages in a format other
+	// than Protocol Buffers, which can't be interpreted.
+	ReasonGRPCUnsupportedCodec = "grpc_unsupported_codec"
 )
 
 // memoryBudget bounds the bytes held across all in-flight and queued bodies.

@@ -226,6 +226,13 @@ func (r *Record) Validate() error {
 	default:
 		return invalid("protocol")
 	}
+	// An RPC is a method path, and replay sends it as the request path.
+	if r.RPC != "" && (len(r.RPC) > MaxPathBytes || !strings.HasPrefix(r.RPC, "/") || hasControl(r.RPC) || strings.ContainsRune(r.RPC, ' ')) {
+		return invalid("rpc")
+	}
+	if r.Descriptor != nil && (len(r.Descriptor.SetDigest) > MaxSessionKeyBytes || !isHex(r.Descriptor.SetDigest)) {
+		return invalid("descriptor")
+	}
 	if r.Timing.HeadersMicros < 0 || r.Timing.TotalMicros < 0 {
 		return invalid("timing")
 	}
