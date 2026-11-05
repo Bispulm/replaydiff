@@ -95,11 +95,16 @@ func AppendFrame(dst, payload []byte, compressed bool) []byte {
 }
 
 // Status returns a response's gRPC status. It normally arrives in the trailers, but a
-// Trailers-Only response carries it in the single HEADERS block. A valid response always
-// has one, so ok is false for a missing or invalid value.
-func Status(header, trailer http.Header) (code int, ok bool) {
+// Trailers-Only response carries it in a single HEADERS block that ends the stream, and
+// trailersOnly says whether the headers did. A status in headers that didn't end the
+// stream is ignored, as clients ignore it. A valid response always has a status, so ok is
+// false for a missing or invalid value.
+//
+// Go's HTTP/2 client sets an http.Response's ContentLength to 0 when the headers ended
+// the stream, which is how callers can tell.
+func Status(header, trailer http.Header, trailersOnly bool) (code int, ok bool) {
 	value := trailer.Get("Grpc-Status")
-	if value == "" {
+	if value == "" && trailersOnly {
 		value = header.Get("Grpc-Status")
 	}
 	code, err := strconv.Atoi(value)

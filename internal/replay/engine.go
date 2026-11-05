@@ -633,7 +633,7 @@ func (e *Engine) call(ctx context.Context, t *target, rec *traffic.Record) CallR
 	}
 	// Trailers are complete once the body has been read to its end.
 	if rec.Protocol == traffic.ProtocolGRPC {
-		if code, ok := grpcwire.Status(resp.Header, resp.Trailer); ok {
+		if code, ok := grpcwire.Status(resp.Header, resp.Trailer, resp.ContentLength == 0); ok {
 			result.GRPCStatus = &code
 		}
 	}
