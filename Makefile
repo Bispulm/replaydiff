@@ -38,3 +38,9 @@ VERSION ?= dev
 .PHONY: image
 image:
 	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE) .
+
+# Capture and replay through the Helm chart on a kind cluster named replaydiff-dev. Needs
+# Docker, kind, kubectl and helm. KEEP=1 keeps the cluster for the next run.
+.PHONY: kind-test
+kind-test:
+	REPLAYDIFF_KIND=1 REPLAYDIFF_KIND_KEEP=$(KEEP) go test -count=1 -timeout 30m -v ./test/kind/

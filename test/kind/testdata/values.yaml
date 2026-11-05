@@ -1,0 +1,15 @@
+# The fixture is the service, reachable only through capture.
+app:
+  image: {repository: replaydiff, tag: kind-e2e, pullPolicy: Never}
+  command: [/usr/local/bin/replaydiff-fixture]
+  args: [--listen=127.0.0.1:8080, --variant=baseline, --instance=capture]
+  port: 8080
+capture:
+  image: {repository: replaydiff, tag: kind-e2e, pullPolicy: Never}
+  redactPolicy: |
+    query_params: [token]
+    json_paths: ["$.customer.email", "$.access_token", "$.password", "$.user.email"]
+storage:
+  persistentVolumeClaim:
+    enabled: true
+    size: 256Mi
