@@ -1,6 +1,7 @@
 package capture
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -421,6 +422,51 @@ func TestAMessageTheDecoderPanicsOnDoesNotStopCapture(t *testing.T) {
 	rec := g.records()[0]
 	if rec.Replay.Eligible || rec.Response.Body.State != traffic.BodyOmitted || rec.Response.Body.Reason != redact.ReasonProtoMalformed {
 		t.Fatalf("response %+v, replay %+v", rec.Response.Body, rec.Replay)
+	}
+}
+
+// Servers read a repeated Content-Type differently: grpc-go takes the call as gRPC if
+// any value says so. Capture once used only the first value, and stored a gRPC body as
+// another type, without the protobuf rules, and as replayable.
+func TestBodiesWithMoreThanOneContentTypeAreNotStored(t *testing.T) {
+	for _, first := range []string{"text/plain", "application/x-www-form-urlencoded"} {
+		t.Run(first, func(t *testing.T) {
+			secret := sentinel(t)
+			reached := false
+			g := newGRPCPath(t, grpcPolicy+"opaque_content_types: [text/plain]\n", true, func(_ context.Context, request *dynamicpb.Message) (proto.Message, error) {
+				reached = field(request, "auth_token").String() == secret
+				return orderMessage(t, grpcSet(t), `{"id":"ord-1"}`), nil
+			})
+			request := newDynamic(t, g.set, "GetOrderRequest")
+			request.Set(request.Descriptor().Fields().ByName("auth_token"), protoreflect.ValueOfString(secret))
+			payload, err := proto.Marshal(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.proxy.URL+getOrderRPC, bytes.NewReader(grpcwire.AppendFrame(nil, payload, false)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header["Content-Type"] = []string{first, "application/grpc"}
+			req.Header.Set("Te", "trailers")
+			resp, err := g.client.RoundTrip(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if !reached {
+				t.Fatal("the upstream must still receive the call")
+			}
+			rec := g.records()[0]
+			if rec.Request.Body.State != traffic.BodyOmitted || rec.Request.Body.Reason != ReasonAmbiguousContentType || rec.Replay.Eligible {
+				t.Fatalf("request body %+v, replay %+v", rec.Request.Body, rec.Replay)
+			}
+			h := &harness{t: t, dir: g.dir, logs: g.logs, closed: true}
+			h.assertNoSecret(secret)
+		})
 	}
 }
 

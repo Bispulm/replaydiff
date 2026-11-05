@@ -144,6 +144,7 @@ Nothing is stored, and there is no fallback to the original bytes.
 | Corrupt compressed data | `omitted` | `malformed_compression` | No |
 | `br`, or stacked encodings | `omitted` | `unsupported_encoding` | No |
 | Decompressed size over the limit (8 MiB by default) | `omitted` | `decompressed_too_large` | No |
+| More than one `Content-Type`, which servers resolve differently | `omitted` | `ambiguous_content_type` | No |
 | Request media type with no rules | `omitted` | `unsupported_content_type` | No |
 | Response media type with no rules | `omitted` | `unsupported_content_type` | Yes |
 

@@ -692,6 +692,12 @@ func (c *Capture) sanitizeExchange(ex *exchange) *traffic.Record {
 	engine := c.engine
 	grpcKind := grpcwire.ContentKind(ex.reqHeader.Get("Content-Type"))
 	sanitize := func(location redact.Location, seen bodyCapture, header http.Header, request bool) (traffic.Body, bool) {
+		if len(header.Values("Content-Type")) > 1 {
+			// grpc-go, for one, takes a call as gRPC if any value says so, whatever
+			// the first one says. Sanitizing by one reading could store another raw.
+			c.countOmitted(ReasonAmbiguousContentType)
+			return traffic.Body{State: traffic.BodyOmitted, Reason: ReasonAmbiguousContentType, ObservedBytes: seen.observed}, true
+		}
 		if grpcKind == grpcwire.KindNone {
 			return c.sanitizeBody(location, seen, header, &hits)
 		}
