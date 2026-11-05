@@ -352,7 +352,7 @@ func (e *Engine) skipReason(entry traffic.Entry) string {
 		return SkipNotReplayable
 	case entry.Protocol == traffic.ProtocolGRPC:
 		return SkipUnsupportedProtocol
-	case !e.methods[strings.ToUpper(entry.Method)]:
+	case !e.methods[entry.Method]:
 		return SkipMutating
 	case entry.BodyState != traffic.BodyPresent && entry.BodyState != traffic.BodyEmpty:
 		return SkipBodyUnavailable
