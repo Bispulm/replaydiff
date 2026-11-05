@@ -918,8 +918,14 @@ func TestCancellationStopsPromptlyAndLeavesNoGoroutines(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run didn't return after cancellation")
 	}
-	if canceledUpstream.Load() == 0 {
-		t.Fatal("cancellation didn't reach the targets")
+	// Run returns as soon as the context ends. The servers notice the dropped
+	// connections slightly later.
+	reached := time.Now().Add(5 * time.Second)
+	for canceledUpstream.Load() == 0 {
+		if time.Now().After(reached) {
+			t.Fatal("cancellation didn't reach the targets")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	engine.Close()
 	c.a.Close()
