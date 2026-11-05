@@ -369,7 +369,9 @@ func TestProtoPolicyNeedsDescriptorsAndRealFields(t *testing.T) {
 	if _, err := NewEngine(policy, Options{}); err == nil {
 		t.Error("proto_fields without a descriptor set must be refused")
 	}
-	for _, field := range []string{"fixture.orders.v1.Customer.nope", "fixture.orders.v1.Nope.email", "fixture.orders.v1.Customer"} {
+	// A map's entries aren't fields redaction walks, so a rule on one would match nothing.
+	for _, field := range []string{"fixture.orders.v1.Customer.nope", "fixture.orders.v1.Nope.email", "fixture.orders.v1.Customer",
+		"fixture.orders.v1.Order.LabelsEntry.value", "fixture.orders.v1.Order.LabelsEntry.key"} {
 		policy, err := ParsePolicy([]byte(`proto_fields: ["` + field + `"]`))
 		if err != nil {
 			t.Fatal(err)

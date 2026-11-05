@@ -243,6 +243,11 @@ func NewEngine(policy *Policy, opts Options) (*Engine, error) {
 		if err != nil {
 			return nil, fmt.Errorf("proto_fields: %w", err)
 		}
+		// Nor would one naming the key or value of a map's entries, which aren't fields
+		// that messages hold.
+		if entry := field.ContainingMessage(); entry.IsMapEntry() {
+			return nil, fmt.Errorf("proto_fields: %q is a map entry's key or value; name the map field %s instead, which is emptied", name, mapFieldOf(entry))
+		}
 		e.protoRules[field.FullName()] = name
 	}
 	if len(e.sessionSecret) == 0 {
@@ -646,4 +651,17 @@ func sessionValue(kind, name string, h http.Header, rawQuery string) string {
 		}
 	}
 	return ""
+}
+
+// mapFieldOf names the map field whose entries the given message describes.
+func mapFieldOf(entry protoreflect.MessageDescriptor) protoreflect.FullName {
+	if parent, ok := entry.Parent().(protoreflect.MessageDescriptor); ok {
+		fields := parent.Fields()
+		for i := range fields.Len() {
+			if field := fields.Get(i); field.IsMap() && field.Message().FullName() == entry.FullName() {
+				return field.FullName()
+			}
+		}
+	}
+	return entry.FullName()
 }

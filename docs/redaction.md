@@ -111,7 +111,9 @@ unpacked at most 8 deep, and a message nesting them deeper is omitted.
 | Repeated or map | Emptied |
 
 A field the set doesn't have is refused at startup, and so is `proto_fields` without
-`--descriptor-set`, because a rule that matches nothing would protect nothing.
+`--descriptor-set`, because a rule that matches nothing would protect nothing. For the same
+reason, a rule can't name the key or value of a map's entries, such as
+`fixture.orders.v1.Order.LabelsEntry.value`. Name the map field instead, which empties it.
 
 Messages are decoded and encoded again, deterministically. A message is never stored as it
 arrived:
