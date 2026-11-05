@@ -67,6 +67,7 @@ type process struct {
 	mu   sync.Mutex
 	logs strings.Builder
 	addr chan string
+	url  string
 	// done is closed once the process has exited and waitErr is set.
 	done    chan struct{}
 	waitErr error
@@ -120,9 +121,13 @@ func start(t *testing.T, env []string, name string, args ...string) *process {
 // baseURL waits for the process to report its listen address.
 func (p *process) baseURL(t *testing.T) string {
 	t.Helper()
+	if p.url != "" {
+		return p.url
+	}
 	select {
 	case addr := <-p.addr:
-		return "http://" + addr
+		p.url = "http://" + addr
+		return p.url
 	case <-time.After(15 * time.Second):
 		t.Fatalf("no listen address; logs:\n%s", p.output())
 		return ""

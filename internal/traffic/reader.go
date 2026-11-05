@@ -111,7 +111,9 @@ type Entry struct {
 	Seq        uint64
 	ID         string
 	SessionKey string
+	Protocol   Protocol
 	Method     string
+	BodyState  BodyState
 	Replay     ReplayInfo
 
 	segment int
@@ -200,7 +202,7 @@ const (
 // decodeRecord verifies and parses a record frame. Its error is non-nil only
 // for an unknown schema version, which must stop the whole read.
 func (d *Dataset) decodeRecord(h frameHeader, stored []byte) (*Record, decodeStatus, error) {
-	raw, ok := d.decompress(h, stored)
+	raw, ok := d.decompress(h, stored, d.maxFrame)
 	if !ok {
 		return nil, decodeCorrupt, nil
 	}
@@ -230,9 +232,10 @@ func (d *Dataset) decodeRecord(h frameHeader, stored []byte) (*Record, decodeSta
 
 // decompress checks the payload checksum and decompresses it. The declared
 // size is checked against the limit before any allocation, and the output must
-// match it exactly.
-func (d *Dataset) decompress(h frameHeader, stored []byte) ([]byte, bool) {
-	if crc32.Checksum(stored, castagnoli) != h.crc {
+// match it exactly. A checksum doesn't make a size trustworthy, because whoever
+// crafts a file can compute valid ones.
+func (d *Dataset) decompress(h frameHeader, stored []byte, maxRaw int64) ([]byte, bool) {
+	if int64(h.rawLen) > maxRaw || crc32.Checksum(stored, castagnoli) != h.crc {
 		return nil, false
 	}
 	switch h.codec {
@@ -472,6 +475,7 @@ func (s *scanner) walkFrames(file io.ReaderAt, size int64, info segmentInfo, seg
 		seen       int64
 		sawFooter  bool
 		footerRead footer
+		finder     = syncFinder{file: file, size: size, marker: info.sync}
 	)
 	for off < size {
 		if sawFooter {
@@ -489,7 +493,7 @@ func (s *scanner) walkFrames(file io.ReaderAt, size int64, info segmentInfo, seg
 		}
 		header, ok := parseFrameHeader(headerBuf[:], info.sync)
 		if !ok {
-			next := findSync(file, off+1, size, info.sync)
+			next := finder.next(off + 1)
 			in.CorruptRegions++
 			if next < 0 {
 				in.CorruptBytes += size - off
@@ -551,7 +555,7 @@ func (s *scanner) readFooter(file io.ReaderAt, off int64, header frameHeader) (f
 	if _, err := file.ReadAt(payload, off+frameHeaderSize); err != nil {
 		return f, false
 	}
-	raw, ok := s.ds.decompress(header, payload)
+	raw, ok := s.ds.decompress(header, payload, maxFooterBytes)
 	if !ok || json.Unmarshal(raw, &f) != nil {
 		return f, false
 	}
@@ -589,7 +593,9 @@ func (s *scanner) readRecord(file io.ReaderAt, off int64, header frameHeader, se
 		Seq:        rec.Seq,
 		ID:         rec.ID,
 		SessionKey: rec.SessionKey,
+		Protocol:   rec.Protocol,
 		Method:     rec.Request.Method,
+		BodyState:  rec.Request.Body.State,
 		Replay:     rec.Replay,
 		segment:    segment,
 		offset:     off,
@@ -598,23 +604,43 @@ func (s *scanner) readRecord(file io.ReaderAt, off int64, header frameHeader, se
 	return nil
 }
 
-// findSync returns the offset of the next sync marker at or after from, or -1.
-// The marker is random per segment, so content inside a record can't forge a
-// frame boundary.
-func findSync(file io.ReaderAt, from, size int64, sync [syncSize]byte) int64 {
-	buf := make([]byte, syncScanChunk)
-	for from < size {
-		n, err := file.ReadAt(buf, from)
-		if n == 0 {
-			return -1
+// syncFinder locates sync markers after damage. The marker is random per segment,
+// so content inside a record written by capture can't forge a frame boundary.
+//
+// A handcrafted file can repeat its own marker everywhere, so the finder keeps a
+// window and only moves forward. A whole segment costs one buffer and one pass, no
+// matter how many false markers it holds.
+type syncFinder struct {
+	file   io.ReaderAt
+	size   int64
+	marker [syncSize]byte
+	buf    []byte
+	start  int64
+	end    int64
+}
+
+// next returns the offset of the first marker at or after from, or -1.
+func (f *syncFinder) next(from int64) int64 {
+	for from+syncSize <= f.size {
+		if from < f.start || from+syncSize > f.end {
+			if !f.fill(from) {
+				return -1
+			}
 		}
-		if i := bytes.Index(buf[:n], sync[:]); i >= 0 {
+		if i := bytes.Index(f.buf[from-f.start:f.end-f.start], f.marker[:]); i >= 0 {
 			return from + int64(i)
 		}
-		if err != nil {
-			return -1
-		}
-		from += int64(n - (syncSize - 1))
+		// Keep enough of the tail to find a marker spanning the window's edge.
+		from = f.end - (syncSize - 1)
 	}
 	return -1
+}
+
+func (f *syncFinder) fill(from int64) bool {
+	if f.buf == nil {
+		f.buf = make([]byte, syncScanChunk)
+	}
+	n, _ := f.file.ReadAt(f.buf, from)
+	f.start, f.end = from, from+int64(n)
+	return n >= syncSize
 }

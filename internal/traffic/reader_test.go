@@ -1,13 +1,17 @@
 package traffic
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"hash/crc32"
+	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -401,6 +405,143 @@ func TestLengthClaimingMoreThanTheFileIsATornTail(t *testing.T) {
 	ds := mustScan(t, dir)
 	if ds.Integrity.PartialTails != 1 || len(ds.Entries) != 0 {
 		t.Fatalf("integrity = %+v", ds.Integrity)
+	}
+}
+
+// bytesAllocatedBy reports how much a function allocated in total.
+func bytesAllocatedBy(f func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	f()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+func TestHandcraftedFooterCannotRequestAHugeAllocation(t *testing.T) {
+	dir := t.TempDir()
+	w, err := NewWriter(dir, WriterOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.openSegment(); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte{0x28, 0xb5, 0x2f, 0xfd, 0x00}
+	header := frameHeader{
+		kind:      frameKindFooter,
+		codec:     codecZstd,
+		storedLen: uint32(len(payload)),
+		rawLen:    math.MaxUint32,
+		crc:       crc32.Checksum(payload, castagnoli),
+	}
+	if _, err := w.file.Write(append(header.appendTo(nil, w.sync), payload...)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var ds *Dataset
+	allocated := bytesAllocatedBy(func() { ds = mustScan(t, dir) })
+	if allocated > 64<<20 {
+		t.Fatalf("Scan allocated %d MiB for a %d byte payload", allocated>>20, len(payload))
+	}
+	if ds.Integrity.CorruptFooters != 1 {
+		t.Fatalf("integrity = %+v", ds.Integrity)
+	}
+}
+
+// A handcrafted file can place its sync marker everywhere, so every position
+// looks like a frame until its checksum fails.
+func TestSyncMarkerFloodCostsLinearWork(t *testing.T) {
+	dir := t.TempDir()
+	w, err := NewWriter(dir, WriterOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.openSegment(); err != nil {
+		t.Fatal(err)
+	}
+	unit := append(append([]byte(nil), w.sync[:]...), make([]byte, 28)...)
+	if _, err := w.file.Write(bytes.Repeat(unit, (1<<20)/len(unit))); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var ds *Dataset
+	allocated := bytesAllocatedBy(func() { ds = mustScan(t, dir) })
+	if allocated > 32<<20 {
+		t.Fatalf("Scan allocated %d MiB for a 1 MiB file", allocated>>20)
+	}
+	if ds.Integrity.CorruptRegions == 0 || ds.Integrity.Complete() {
+		t.Fatalf("integrity = %+v", ds.Integrity)
+	}
+}
+
+type countingReaderAt struct {
+	data []byte
+	read int64
+}
+
+func (c *countingReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	if off >= int64(len(c.data)) {
+		return 0, io.EOF
+	}
+	n := copy(p, c.data[off:])
+	c.read += int64(n)
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func TestSyncFinderReadsEachByteAboutOnce(t *testing.T) {
+	marker := [syncSize]byte{1, 2, 3, 4, 5, 6, 7, 8}
+	unit := append(append([]byte(nil), marker[:]...), make([]byte, 28)...)
+	data := bytes.Repeat(unit, (4*syncScanChunk)/len(unit))
+	file := &countingReaderAt{data: data}
+	finder := syncFinder{file: file, size: int64(len(data)), marker: marker}
+
+	found := 0
+	for off := finder.next(0); off >= 0; off = finder.next(off + 1) {
+		if off%int64(len(unit)) != 0 {
+			t.Fatalf("marker at %d isn't aligned to a unit", off)
+		}
+		found++
+	}
+	if want := len(data) / len(unit); found != want {
+		t.Fatalf("found %d markers, want %d", found, want)
+	}
+	if limit := 2 * int64(len(data)); file.read > limit {
+		t.Fatalf("read %d bytes of a %d byte file", file.read, len(data))
+	}
+}
+
+func TestSyncFinderFindsAMarkerSpanningAWindowEdge(t *testing.T) {
+	marker := [syncSize]byte{9, 8, 7, 6, 5, 4, 3, 2}
+	for _, offset := range []int{syncScanChunk - 8, syncScanChunk - 7, syncScanChunk - 1, syncScanChunk, syncScanChunk + 1} {
+		data := make([]byte, 2*syncScanChunk+64)
+		copy(data[offset:], marker[:])
+		finder := syncFinder{file: &countingReaderAt{data: data}, size: int64(len(data)), marker: marker}
+		if got := finder.next(0); got != int64(offset) {
+			t.Errorf("marker at %d found at %d", offset, got)
+		}
+		if got := finder.next(int64(offset) + 1); got != -1 {
+			t.Errorf("after the only marker, found %d", got)
+		}
+	}
+}
+
+func TestSyncFinderHandlesShortAndMarkerlessFiles(t *testing.T) {
+	marker := [syncSize]byte{1, 1, 1, 1, 1, 1, 1, 1}
+	for _, size := range []int{0, 1, syncSize - 1, syncSize, 100} {
+		data := make([]byte, size)
+		finder := syncFinder{file: &countingReaderAt{data: data}, size: int64(size), marker: marker}
+		if got := finder.next(0); got != -1 {
+			t.Errorf("size %d: found %d", size, got)
+		}
 	}
 }
 

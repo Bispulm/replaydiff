@@ -85,6 +85,19 @@ type Limits struct {
 	MaxRecordBytes int // Default traffic.DefaultMaxRecordBytes.
 }
 
+func (l Limits) validate() error {
+	switch {
+	case l.MaxRequestBodyBytes < 0, l.MaxResponseBodyBytes < 0, l.MemoryBudgetBytes < 0,
+		l.MaxSegmentBytes < 0, l.MaxRecordBytes < 0:
+		return errors.New("capture: size limits must not be negative")
+	case l.QueueCapacity < 0, l.Workers < 0:
+		return errors.New("capture: queue capacity and workers must not be negative")
+	case l.ProcessingDeadline < 0, l.StorageRetryInterval < 0, l.SyncInterval < 0:
+		return errors.New("capture: durations must not be negative")
+	}
+	return nil
+}
+
 func (l Limits) withDefaults() Limits {
 	l.MaxRequestBodyBytes = cmp.Or(l.MaxRequestBodyBytes, 1<<20)
 	l.MaxResponseBodyBytes = cmp.Or(l.MaxResponseBodyBytes, 1<<20)
@@ -174,6 +187,9 @@ func New(cfg Config) (*Capture, error) {
 		return nil, errors.New("capture: output directory is required")
 	case cfg.Engine == nil:
 		return nil, errors.New("capture: redaction engine is required")
+	}
+	if err := cfg.Limits.validate(); err != nil {
+		return nil, err
 	}
 	limits := cfg.Limits.withDefaults()
 	encoder, err := traffic.NewEncoder(traffic.EncoderOptions{MaxRecordBytes: limits.MaxRecordBytes})
