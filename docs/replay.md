@@ -99,7 +99,7 @@ unrelated records carry on.
 
 The HTTP client can resend by itself in specific cases. Over HTTP/1.1 this is prevented by
 not reusing connections, so each call opens a new one, and all three targets pay that cost
-equally. Its effect on latency and maximum replay rate hasn't been measured yet. Over
+equally. The replay rate in the [benchmarks](benchmarks.md) includes it. Over
 HTTP/2 it can't be prevented when a server says it didn't process a request, so those
 resends are counted and reported. See [resends](architecture.md#resends).
 
