@@ -1,8 +1,7 @@
 # Benchmarks
 
-These targets were set before anything was measured, so that results are judged against
-them rather than chosen to fit. Results are added below with the machine, versions, commit,
-commands and anything else that was running. A missed target is reported as missed.
+The targets were set before anything was measured, so results are judged against them
+rather than chosen to fit. A missed target would be reported as missed.
 
 ## Targets
 
@@ -18,23 +17,14 @@ commands and anything else that was running. A missed target is reported as miss
 
 ## Method
 
-**Open loop.** Requests are scheduled at fixed intervals, and latency is measured from when a
-request was due, not when a free connection picked it up. A slow server can't lower the load
-it receives, so queueing shows up as latency rather than being hidden.
-
-**Direct and proxied phases alternate**, several rounds each, against the same upstream, so
-drift on the machine affects both. The upstream is a minimal server returning a fixed body,
-so its own cost is small and constant.
-
-**Capture runs as its own process**, as deployed, writing to a local disk. Drops come from its
-metrics, and its peak resident set comes from the operating system when it exits.
-
-**Replay and fairness** use the replay engine against local targets that answer at once, so
-they measure scheduling and the client rather than a service.
-
-**Other workloads.** The machine is shared. Measurements hold a lock that other heavy jobs
-respect, and record the load average before and after. Anything that couldn't be excluded is
-stated with the result.
+- **Open loop.** Requests go out on a fixed schedule, and latency is measured from when each
+  was due, so queueing shows up as latency instead of being hidden.
+- **Direct and proxied phases alternate**, several rounds each, against a minimal upstream
+  that returns a fixed body, so drift on the machine affects both.
+- **Capture runs as its own process**, as deployed, writing to local disk. Drops come from
+  its metrics, and its peak resident set from the operating system.
+- **Replay and fairness** run the replay engine against local targets that answer at once,
+  so they measure scheduling and the client, not a service.
 
 ## Results, 2026-11-05
 
@@ -48,32 +38,21 @@ stated with the result.
 | Fairness | The last short session finished at 13% of the run | Within 30% | Met |
 
 **Machine.** Apple M4 Pro, 14 CPUs, 24 GiB, macOS on arm64, Go 1.27.3. The load generator,
-the upstream and capture shared the machine and talked over loopback, so no network latency
-is included, and the three competed for CPU. Bodies were 1 KiB of JSON, every request was a
-GET over HTTP/1.1, and capture applied one JSON-path rule. HTTP/2, gRPC and TLS weren't
-measured.
+the upstream and capture shared the machine over loopback, so no network latency is
+included, and they competed for CPU. Bodies were 1 KiB of JSON, every request was a GET over
+HTTP/1.1, and capture applied one JSON-path rule. HTTP/2, gRPC and TLS weren't measured.
 
-**Other workloads.** Other builds and tests were running on the same machine throughout. The runs held a lock that kept other benchmarks and cluster tests out, but not
-ordinary builds and tests. Load averages were recorded:
+**Other workloads.** Other builds and tests were running on the same machine throughout,
+with load averages between 5.3 and 12.2. The runs held a lock that kept other benchmarks and
+cluster tests out, but not ordinary builds and tests. In the first run, at commit `29fe6f7`,
+two of the three latency rounds were disturbed, with p99 spikes of 248 ms proxied and 132 ms
+direct that weren't tied to capture. Latency was measured again over seven rounds at
+`0050fcb`, with the same capture code, and that is the result above.
 
-| Run | Commit | Load average before | After |
-|---|---|---|---|
-| All measurements | `29fe6f7` | 6.5, 10.6, 9.4 | 10.5, 12.2, 11.6 |
-| Latency, repeated with 7 rounds | `0050fcb`, the same capture code | 5.3, 8.9, 10.3 | 7.7, 5.4, 7.8 |
-
-In the first run, two of the three latency rounds were disturbed. One proxied phase reached a
-p99 of 248 ms and one direct phase 132 ms, with neither tied to capture. Its median came from
-the one quiet round, so latency was measured again with seven rounds, and that is the result
-above. A 5-second test run of this project also overlapped the first run.
-
-**Latency by round.** The added latency differs from round to round by more than its median,
-in both directions, so the effect is smaller than this machine's noise. What the
-measurement supports is that capture added well under a millisecond at the median here.
-
-| Round | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
-|---|---|---|---|---|---|---|---|
-| p50 added, ms | +0.40 | +0.09 | +0.09 | −0.20 | +0.41 | +0.09 | −0.05 |
-| p99 added, ms | +1.08 | +0.30 | +0.25 | −1.21 | +0.50 | +0.26 | +1.59 |
+**Latency varies more than the effect.** Across the seven rounds, added latency ranged from
+−0.20 to +0.41 ms at p50 and from −1.21 to +1.59 ms at p99. The effect is smaller than this
+machine's noise, so what the measurement supports is that capture added well under a
+millisecond at the median.
 
 **Rate steps.** Each step started a new capture process and offered the rate for 20 seconds.
 
@@ -85,13 +64,12 @@ measurement supports is that capture added well under a millisecond at the media
 | 8,000 | 8,000 | 0 | 0.12 | 0.38 | 45 MiB |
 | 16,000 | 16,000 | 6,286 of 320,000, all `queue_full` | 1.18 | 31.24 | 68 MiB |
 
-At 16,000 req/s every request was still forwarded without error. Recordings were dropped
-rather than traffic delayed, as designed, but p99 rose by 30 ms. The search stopped there.
+At 16,000 req/s every request was still forwarded, and recordings were dropped rather than
+traffic delayed, as designed, but p99 rose by 30 ms. The search stopped there.
 
-**Replay and fairness** used the replay engine against local targets that answer at once,
-with default concurrency (32 calls, 16 per target, 256 active sessions). Real services would
-be far slower than these targets, so the replay rate shows that replay itself isn't a
-bottleneck, not what a run against real services would achieve.
+**Replay** used default concurrency: 32 calls, 16 per target, and 256 active sessions. Its
+targets answer at once, so the rate shows that replay itself isn't a bottleneck, not what a
+run against real services would achieve.
 
 **Go benchmarks**, median of 5 runs each, from `make bench`:
 
@@ -104,10 +82,10 @@ bottleneck, not what a run against real services would achieve.
 | Encode a record | 6.6 µs | 4.4 KB | 8 |
 | Compare one JSON record three ways | 193 µs | 182 KB | 3,017 |
 
-The request benchmark is serial and includes the recording work capture does in the
-background, so its 39 µs difference approximates what capture costs per request on this
-machine, the extra hop included. A captured request allocates about ten times as much as a direct one, mostly in
-body capture and encoding. Nothing has been optimized, since every target was met.
+The serial request benchmark includes capture's background recording work, so its 39 µs
+difference approximates what capture costs per request, the extra hop included. A captured
+request allocates about ten times as much as a direct one, mostly in body capture and
+encoding. Nothing has been optimized, since every target was met.
 
 **Commands.**
 
@@ -119,6 +97,6 @@ make bench
 ```
 
 **Limits.** One machine, loopback only, small synthetic GET requests, and a load generator
-sharing the CPU. These results show the design holds its bounds under load. They don't
+sharing the CPU. The results show that the design holds its bounds under load. They don't
 predict latency or capacity in production, which depend on the network, body sizes, the
-policy and the service. Measure in your own environment.
+policy and the service, so measure in your own environment.
