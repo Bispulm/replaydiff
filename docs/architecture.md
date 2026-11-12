@@ -47,8 +47,8 @@ in the final segment, so a replay can report the gap.
 | Other write error | Same, counted as `write_error` |
 | Slow or stuck writes | Queue fills, then `queue_full`. Clients are unaffected. |
 
-Capture adds some processing overhead to the request path, which hasn't been measured
-yet. Benchmarks are planned.
+Capture adds some processing overhead to the request path. It was measured on one machine
+in the [benchmarks](benchmarks.md).
 
 ### Shutdown
 
