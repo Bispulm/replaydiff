@@ -53,8 +53,7 @@ is included, and the three competed for CPU. Bodies were 1 KiB of JSON, every re
 GET over HTTP/1.1, and capture applied one JSON-path rule. HTTP/2, gRPC and TLS weren't
 measured.
 
-**Other workloads.** Two other projects were building and testing on the same machine
-throughout. The runs held a lock that kept other benchmarks and cluster tests out, but not
+**Other workloads.** Other builds and tests were running on the same machine throughout. The runs held a lock that kept other benchmarks and cluster tests out, but not
 ordinary builds and tests. Load averages were recorded:
 
 | Run | Commit | Load average before | After |
