@@ -115,7 +115,6 @@ policy, waivers and a GitHub Actions example.
 - [Comparison](docs/diffing.md)
 - [CI gate](docs/ci.md)
 - [Fixtures](docs/fixtures.md)
-- [Related tools](docs/related-tools.md)
 - [Decision records](docs/adr/)
 
 ## Development
