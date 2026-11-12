@@ -4,8 +4,8 @@
 
 ## Destinations
 
-Replay sends only to origins given on the command line, each of which must also
-be on the allowlist:
+Replay sends only to origins given on the command line, and each must also be on the
+allowlist:
 
 ```bash
 replaydiff run --traffic ./traffic --report report.json --redact redact.yaml \
@@ -16,23 +16,22 @@ replaydiff run --traffic ./traffic --report report.json --redact redact.yaml \
   --allow-origin http://c.internal:8080
 ```
 
-- A target must be a bare origin. A path, query, fragment or credentials in the
-  URL are errors.
+- A target must be a bare origin. A path, query, fragment or credentials in the URL are
+  errors.
 - A target missing from the allowlist stops the run before any traffic is sent.
-- The two baselines and the candidate must be different origins. Comparing a
-  service with itself would always look clean.
-- Nothing in a record can choose a destination. A record provides only a path and
-  query, and the request URL is assembled field by field from the configured origin.
-  `Host`, `Forwarded` and `X-Forwarded-*` from the recording are not sent.
-- Recorded `traceparent`, `tracestate` and `baggage` are not sent, since they belong to
-  the production call the record came from. With tracing on, each call carries replay's
-  own trace context instead. See [traces](deployment.md#traces).
-- Redirects are never followed. A 3xx response is recorded as the result.
-- Proxy environment variables such as `HTTP_PROXY` are ignored.
+- The baselines and the candidate must be different origins, since a service compared with
+  itself always looks clean.
+- Nothing in a record can choose a destination. The request URL is built from the configured
+  origin plus the record's path and query, and recorded `Host`, `Forwarded` and
+  `X-Forwarded-*` headers aren't sent.
+- Recorded `traceparent`, `tracestate` and `baggage` aren't sent either, since they belong to
+  the production call. See [traces](deployment.md#traces).
+- Redirects are never followed, so a 3xx is the result. Proxy environment variables such as
+  `HTTP_PROXY` are ignored.
 
-**DNS.** The allowlist compares host names as text and doesn't pin addresses. If a
-listed name resolves somewhere unexpected, traffic goes there. Use names you control
-or IP addresses, and don't allowlist anything an untrusted party can change.
+**DNS.** The allowlist compares host names as text and doesn't pin addresses, so a listed
+name that resolves somewhere unexpected sends traffic there. Use names you control or IP
+addresses.
 
 ## Eligibility
 
@@ -49,33 +48,26 @@ Having been captured doesn't make a request safe to replay.
 | gRPC, recorded with another descriptor set | Skipped | `descriptor_mismatch` |
 | Not gRPC, but with a gRPC `Content-Type` or more than one `Content-Type` | Not sent, as an `invalid_request`, which makes evidence incomplete | |
 
-`--allow-method POST` repeats side effects on all three targets. Use it only against
+`--allow-method POST` repeats side effects on all three targets, so use it only against
 disposable environments.
 
 ## Comparable targets
 
-The tool doesn't make stateful targets equivalent. Baseline A and B must run the same
-version, and all three must hold comparable data before the replay starts, or the
-differences you see will come from the data rather than the code.
+Baselines A and B must run the same version, and all three targets must hold comparable data
+before the replay starts. Otherwise the differences come from the data rather than the code.
+replaydiff doesn't make stateful targets equivalent.
 
 ## Scheduling
 
-Records with the same session key form a session. Sessions take turns in a FIFO, and
-a session has at most one record in flight. A record is sent to all three targets at
-once, and the session's next record starts only after all three finish.
+Records with the same session key form a session. Sessions take turns, and each has at most
+one record in flight. A record goes to all three targets at once, and the session's next
+record starts only after all three finish. So a session's requests reach each target in their
+original order, a long session can't starve short ones, a slow session holds at most one
+worker, and latencies are comparable because the targets see each record at the same time.
 
-This gives the following guarantees:
-
-- A session's requests reach each target in their original order, and each finishes
-  before the next begins.
-- A long session gets the same turns as a short one, so it can't starve others.
-- A slow session holds one worker at most.
-- All three targets see each record at the same time, so latencies are comparable.
-
-Records without a session key run independently. Sessions beyond
-`--max-active-sessions` wait until an active session finishes, so a very long session
-can delay ones that haven't started. Only a few records are in memory at once: `Scan`
-builds an index, and bodies are read when needed.
+Records without a session key run independently. Sessions beyond `--max-active-sessions` wait
+for an active one to finish, so a very long session can delay ones that haven't started.
+Bodies are read from disk when needed, so only a few records are in memory at once.
 
 ## Rates and limits
 
@@ -89,59 +81,45 @@ builds an index, and bodies are read when needed.
 | `--timeout` | One call, including reading its response | 10s |
 | `--max-response-body` | A held response, after decompression | 8 MiB |
 
-One logical record makes three upstream calls, so `--rps 100` means about 300 calls
-per second in total. The report shows both `records_per_second` and
-`upstream_calls_per_second`.
+One logical record makes three upstream calls, so `--rps 100` means about 300 calls per
+second. The report shows both `records_per_second` and `upstream_calls_per_second`.
 
-**replaydiff doesn't retry.** It makes one attempt per target for each record, because a
-retry would change the load and repeat side effects. A timeout is a recorded outcome, and
-unrelated records carry on.
-
-The HTTP client can resend by itself in specific cases. Over HTTP/1.1 this is prevented by
-not reusing connections, so each call opens a new one, and all three targets pay that cost
-equally. The replay rate in the [benchmarks](benchmarks.md) includes it. Over
-HTTP/2 it can't be prevented when a server says it didn't process a request, so those
-resends are counted and reported. See [resends](architecture.md#resends).
+**replaydiff doesn't retry.** A retry would change the load and repeat side effects, so it
+makes one attempt per target, and a timeout is a recorded outcome. The HTTP client can still
+resend by itself in a few cases. Over HTTP/1.1, replay prevents that by not reusing
+connections, a cost all three targets pay equally and that the replay rate in the
+[benchmarks](benchmarks.md) includes. Over HTTP/2 it can't be prevented when a server says it
+didn't process a request, so those resends are counted. See [resends](architecture.md#resends).
 
 ## Credentials
 
-Redacted headers are never sent, and the placeholder is never used as a value. Supply
-real credentials per target from environment variables:
+Redacted headers are never sent, and the placeholder is never used as a value. Supply real
+credentials per target from environment variables:
 
 ```bash
 export BASELINE_TOKEN="Bearer ..."
 replaydiff run ... --target-credential baseline-a:Authorization=BASELINE_TOKEN
 ```
 
-Values are never written to the report, which names only the headers each target was
-given. Nothing is ever recovered from a recording.
+The report names only which headers each target was given, never their values, and nothing is
+ever recovered from a recording.
 
 ## Sanitizing responses
 
-`--redact` is required, and should usually be the policy used at capture. Responses are
-sanitized with it before they're compared, because values from them can appear in the report as
+`--redact` is required, and is usually the policy used at capture. Responses are sanitized
+with it before they're compared, because their values can appear in the report as
 [evidence](diffing.md#evidence-and-limits).
 
 ## Exit codes
 
-| Code | `run` |
-|---|---|
-| 0 | The replay finished with complete evidence, whatever the findings were |
-| 2 | Invalid configuration, execution failure, or incomplete evidence |
+`run` exits 0 when the replay finished with complete evidence, whatever it found, and 2 for
+invalid configuration, a failure, or incomplete evidence. **It doesn't judge findings.**
+[`report`](ci.md) is the CI gate.
 
-**`run` doesn't judge findings.** Use [`report`](ci.md) as the CI gate.
-
-Evidence is incomplete when any of these is true:
-
-- The dataset is damaged or incomplete in any way.
-- There were no eligible records.
-- The run was interrupted.
-- A record couldn't be read back.
-- Any call to a baseline failed.
-
-A failing candidate doesn't make evidence incomplete, since finding that is the point.
-Records that capture dropped are shown as `capture_drops`, and stop a pass at the gate unless
-its policy allows them.
+Evidence is incomplete if the dataset is damaged or incomplete, no record was eligible, the
+run was interrupted, a record couldn't be read back, or a baseline call failed. A failing
+candidate doesn't count, since finding that is the point. Records that capture dropped are
+shown as `capture_drops`, and stop a pass at the gate unless its policy allows them.
 
 ## Current limits
 
