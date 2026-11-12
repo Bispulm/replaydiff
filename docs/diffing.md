@@ -1,34 +1,33 @@
 # Comparison
 
 `replaydiff run` compares each record's responses from baseline A, baseline B and the
-candidate. The results go in the report's `comparison` section.
-
-**Severity isn't CI policy.** A finding says what was seen. Whether it fails a build is decided
-by the [CI gate](ci.md).
+candidate, and puts the results in the report's `comparison` section. **Severity isn't CI
+policy.** A finding says what was seen, and the [CI gate](ci.md) decides whether it fails a
+build.
 
 ## What is compared
 
-Responses are sanitized with the redaction policy before anything else happens to them, so
-that evidence can't hold values the policy covers. This means a redacted field's value and
-type aren't compared, since all three targets show the same placeholder. Its presence is.
+Responses are sanitized with the redaction policy first, so evidence can't hold values the
+policy covers. A redacted field's presence is compared, but not its value or type, since all
+three targets show the same placeholder.
 
 For each record, in this order:
 
-1. **The call.** A failed baseline call means the record isn't compared, and the run's
-   evidence is incomplete. A failed candidate call is a finding.
-2. **Status.** A changed class stops the comparison of that record, because the bodies are
-   no longer the same kind of response. For gRPC, the gRPC status is compared next, as
-   described under [gRPC status](#grpc-status).
+1. **The call.** A failed baseline call leaves the record uncompared and the run's evidence
+   incomplete. A failed candidate call is a finding.
+2. **Status.** A changed class stops the comparison of that record, since the bodies are no
+   longer the same kind of response. For gRPC, the [gRPC status](#grpc-status) is compared
+   next.
 3. **Media type**, ignoring parameters such as `charset`.
-4. **Headers** listed in `compare_headers`. Others aren't compared, because many vary by nature.
-   Headers removed by sanitizing, such as `ETag` and `Content-Length`, are refused in the config,
-   since they could never show a difference.
+4. **Headers** listed in `compare_headers`. Others vary by nature, so they aren't compared.
+   Headers that sanitizing removes, such as `ETag` and `Content-Length`, are refused in the
+   config.
 5. **The body.**
 
 ## Bodies
 
-JSON bodies are compared by structure. Bodies of a type listed in `opaque_content_types`, and
-form-encoded ones, are compared as a whole. Others can't be compared, and that is reported.
+JSON bodies are compared by structure. Form-encoded bodies, and types listed in
+`opaque_content_types`, are compared as a whole. Anything else is reported as not comparable.
 
 | Rule | Example | Result |
 |---|---|---|
@@ -39,35 +38,34 @@ form-encoded ones, are compared as a whole. Others can't be compared, and that i
 | Types are never coerced | `1`, `"1"` | Type changed |
 | Array order matters, unless a rule says otherwise | `[1,2]`, `[2,1]` | Different |
 
-Numbers are compared exactly, by value. Those with an exponent above 1000 or more than 512
-characters are compared by their text, because exact comparison would be too expensive.
-
-Array elements are compared by position, up to the shortest length, and a different length
-is its own finding. Anything nested deeper than 64 levels is compared as a single value.
+Numbers are compared exactly, except that those with an exponent above 1000 or more than 512
+characters are compared as text, to keep comparison cheap. Array elements are compared by
+position up to the shorter length, and a different length is its own finding. Anything nested
+deeper than 64 levels is compared as a single value.
 
 ## Protobuf
 
 gRPC responses are decoded with the run's `--descriptor-set` after redaction, and compared
-by field, following protobuf's own rules for presence. Paths use the field names in the
-schema, such as `$.customer.tier`.
+field by field under protobuf's own rules for presence. Paths use the schema's field names,
+such as `$.customer.tier`.
 
 | Field | Rule | Example | Result |
 |---|---|---|---|
 | A message, `optional` field or `oneof` member | Present only when set | `shipment` unset | Breaking `field_removed` |
 | `oneof` | Each member is a field of its own | `card_last4` replaced by `invoice_id` | `field_removed` and `field_added` |
 | Any other scalar | Always present, holding its default when unset, because the wire format can't tell those apart | `tier: "gold"` unset | Warning `value_changed` |
-| Repeated | Like a JSON array | | |
 | Map | Entries are data, not fields, so keys become `[*]` in paths | Entry removed, added, changed | Warning `map_entry_removed`, info `map_entry_added`, warning `value_changed` at `$.labels[*]` |
-| Enum | By number, so an unknown number still compares | | |
-| 64-bit integer | Exactly | `9007199254740993`, `9007199254740992` | Different |
-| `bytes` | By value, shown as base64 | | |
 | `Any` of a type in the set | Unpacked and compared by field, at most 8 deep. Its packed type is its type, and an `Any` it packs is under `value`. | Another packed type | Breaking `type_changed` |
 | `Any` of another type | By a digest of its bytes, which are never shown | | `value_changed` at `.value` |
 | A field the set doesn't describe | By presence and wire type only, at a path such as `$['#99']` | | |
 
-A candidate message that can't be decoded is breaking `body_invalid`. When the baselines' can't
-be either, or no descriptor set was given, the record is uncertain `body_not_compared`. An OK
-reply must carry a message, so one without is breaking `body_removed`.
+Repeated fields compare like JSON arrays, enums by number so that an unknown number still
+compares, 64-bit integers exactly, and `bytes` by value, shown as base64.
+
+A candidate message that can't be decoded is breaking `body_invalid`. If the baselines'
+messages can't be decoded either, or no descriptor set was given, the record is uncertain
+`body_not_compared`. An OK reply must carry a message, so one without is breaking
+`body_removed`.
 
 ### gRPC status
 
@@ -94,19 +92,16 @@ client discards any message that comes with an error.
 
 ## Noise
 
-Baseline A and baseline B run the same code, so a field that differs between them varies for
-reasons other than the code, such as a timestamp or a generated ID.
+Baselines A and B run the same code, so a field that differs between them varies for reasons
+other than the code, such as a timestamp or a generated ID. **Noise only ever explains
+differences in values.** Structure is checked first and separately, so a field the candidate
+removed or retyped is breaking however much its value varies.
 
-**Noise only ever explains differences in values.** Structure is checked first and separately,
-so a field the candidate removed or retyped is breaking however much its value varies.
-
-Each field is tracked separately per route and per JSON type, so noise on one route doesn't
-excuse a change on another, and disagreement about a field's strings says nothing about a change
-to its numbers. The decision compares two rates over all such comparisons:
-
-- **Baseline rate:** how often A and B disagreed.
-- **Candidate rate:** how often the candidate differed from them. A candidate matching either
-  baseline when they disagree isn't counted as different.
+Each field is tracked per route and per JSON type, so noise on one route doesn't excuse a
+change on another, and disagreement about a field's strings says nothing about a change to
+its numbers. The decision compares two rates: how often A and B disagreed, and how often the
+candidate differed from them. A candidate that matches either baseline when they disagree
+doesn't count as different.
 
 | Situation | Decision | Finding |
 |---|---|---|
@@ -116,26 +111,21 @@ to its numbers. The decision compares two rates over all such comparisons:
 | Larger gap, and the 95% Wilson intervals of the two rates don't overlap | `exceeded` | `value_changed_beyond_noise` |
 | Larger gap, but the intervals overlap | `insufficient_evidence` | `insufficient_baseline_evidence` |
 
-Every decision is listed in the report's `noise` section with its counts and rates.
+The report's `noise` section lists every decision with its counts and rates. To resolve
+uncertainty, replay more traffic on the route. Requests for different IDs on the same route
+count toward the same fields.
 
-More observations resolve uncertainty, so replay more traffic on the route. Records are grouped
-by route, so requests for different IDs count toward the same fields.
-
-If the baselines disagree on a field's presence or type, it can't be judged, and that is
-reported as uncertain. The exceptions are a candidate missing a field both baselines have, or
-having a type neither has, which are still breaking.
+If the baselines disagree on a field's presence or type, it's reported as uncertain. A
+candidate missing a field both baselines have, or with a type neither has, is still breaking.
 
 ## Routes
 
-Records are grouped into routes such as `GET /v1/orders/*`. Patterns in `routes` are tried first,
-where `*` matches one segment, a trailing `**` any remainder, and a method of `*` any method.
-
-Otherwise, a path segment containing a digit is treated as an ID, unless it looks like a version
-such as `v1`. This is a heuristic: an ID with no digits becomes its own route, and gets fewer
-observations. Add a pattern to group those.
-
-A gRPC route is its method, such as `POST /fixture.orders.v1.OrderService/GetOrder`. The ID
-heuristic doesn't apply to it, since a method path holds no IDs.
+Records are grouped into routes such as `GET /v1/orders/*`. Patterns in `routes` are tried
+first: `*` matches one segment, a trailing `**` any remainder, and a method of `*` any method.
+Otherwise, a path segment containing a digit is treated as an ID, unless it looks like a
+version such as `v1`. An ID with no digits becomes its own route with fewer observations, so
+add a pattern for those. A gRPC route is its method, such as
+`POST /fixture.orders.v1.OrderService/GetOrder`, and IDs aren't guessed in it.
 
 ## Rules
 
@@ -159,56 +149,53 @@ error_rate: {min_requests: 20, max_increase_points: 1}
 limits: {max_routes: 1000, max_fields_per_route: 2000, max_findings: 1000, max_evidence_bytes: 120}
 ```
 
-Pass it with `--diff-config`. The values shown are the defaults. Unknown keys are errors.
-
+Pass it with `--diff-config`. The values shown are the defaults, and unknown keys are errors.
 Field paths use normalized array indexes (`$.items[*].id`), and a rule covers everything under
-its path. **An ignore rule covers values only** unless `ignore_structure` is set. What each rule
-suppressed is listed in the report's `ignored` section.
+its path. **An ignore rule covers values only**, unless `ignore_structure` is set. The report's
+`ignored` section lists what each rule suppressed.
 
 ## Latency
 
-- **Samples:** only records that succeeded on all three targets. Each was sent to all three at
-  the same time, so they saw comparable load.
-- **Percentiles:** nearest rank, meaning the smallest sample with at least that percentage of
-  samples at or below it. Each target's percentile is computed from its own samples.
-- **Reference:** the slower baseline at that percentile.
-- **Regression:** the candidate exceeds the reference by more than `max_increase_percent` and by
-  at least `min_increase_ms`. The second condition stops tiny absolute changes from counting.
-- **Too few samples:** below `min_samples`, a route's latency isn't evaluated, and the report's
-  `routes` section says so.
+Latency is compared only on records that succeeded on all three targets. Each record reached
+all three at the same time, so they saw comparable load. It's measured from sending the
+request to reading the whole response, and includes opening a connection, because replay
+doesn't reuse them. Each target's percentiles use the nearest-rank method over its own
+samples, of which up to 4096 are kept per route and target, replaced at random beyond that.
 
-Latency is measured from sending the request to reading the whole response, and includes opening
-a connection, because replay doesn't reuse them. Up to 4096 samples are kept per route and target,
-replaced at random beyond that.
+A route regresses when, at a percentile, the candidate exceeds the slower baseline by more
+than `max_increase_percent` and by at least `min_increase_ms`, so tiny absolute changes don't
+count. Below `min_samples`, a route's latency isn't evaluated, and the report's `routes`
+section says so.
 
 ## Error rate
 
-Errors are 5xx responses and failed calls, and for gRPC, server faults as listed under
-[gRPC status](#grpc-status). A route has a regression when the candidate's rate exceeds
-the baselines' by more than `max_increase_points` percentage points, with at least `min_requests`
+Errors are 5xx responses and failed calls, plus gRPC server faults as listed under
+[gRPC status](#grpc-status). A route regresses when the candidate's rate exceeds the
+baselines' by more than `max_increase_points` percentage points, with at least `min_requests`
 records.
 
 ## Evidence and limits
 
-Each finding cites the example with the lowest sequence number, with each target's type and value.
-`present` distinguishes a missing field from a null one. Values come from sanitized responses and are
-cut to `max_evidence_bytes`. Findings are sorted by severity, route, path and kind, so output doesn't
-depend on the order responses arrived in.
+Each finding cites the example with the lowest sequence number, with each target's type and
+value, and `present` tells a missing field from a null one. Values come from sanitized
+responses and are cut to `max_evidence_bytes`. Findings are sorted by severity, route, path and
+kind, so output doesn't depend on the order responses arrived in.
 
 Reaching a limit never hides anything silently:
 
-- Past `max_findings`, the list is cut, the severity counts stay complete, and `truncated` says how
-  many were left out. The most severe findings come first.
-- Past `max_fields_per_route` or `max_routes`, an uncertain notice appears in `limited`. Those fields
-  aren't checked, and those routes are grouped together under `(other routes)`. `run` exits 2 and the gate
-  can't pass, because part of the evidence wasn't compared. Raise the limit to resolve it.
+- Past `max_findings`, the list is cut with the most severe first, the severity counts stay
+  complete, and `truncated` says how many were left out.
+- Past `max_fields_per_route` or `max_routes`, an uncertain notice appears in `limited`, the
+  extra fields aren't checked, and the extra routes are grouped under `(other routes)`. `run`
+  exits 2 and the gate can't pass. Raise the limit to resolve it.
 
 ## Known limits
 
-- A candidate whose value is wrong but always different, on a field that also always differs between
-  baselines, looks like noise. A frozen timestamp is one example. Structure is still checked.
-- Coarse timestamps can differ between targets only occasionally, and if the baselines happen to agree
-  each time, that shows as `value_changed`. Add an ignore rule for fields like these.
-- Secret-like values the redaction policy doesn't cover can appear in evidence. Use `evidence: types`
-  if that's a concern, and see [redaction limits](redaction.md#known-limits).
+- A candidate value that's wrong but always different, on a field that also always differs
+  between baselines, looks like noise. A frozen timestamp is one example. Structure is still
+  checked.
+- Coarse timestamps can differ between targets only occasionally. If the baselines happen to
+  agree each time, that shows as `value_changed`, so add an ignore rule for fields like these.
+- Secret-like values the redaction policy doesn't cover can appear in evidence. Use
+  `evidence: types` if that's a concern, and see [redaction limits](redaction.md#known-limits).
 - Object keys appear in field paths and aren't redacted. So do protobuf map keys, in evidence.

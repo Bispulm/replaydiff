@@ -1,4 +1,4 @@
-# Deployment
+# Deployment and observability
 
 replaydiff runs in Kubernetes as a sidecar: the service and capture share a pod, and the
 Service sends traffic to capture, which forwards it to the service on localhost. There is
@@ -48,7 +48,7 @@ It renders:
 | `capture.descriptorSet.configMap` | | A ConfigMap holding the descriptor set, for gRPC |
 | `capture.sessionSecret.secretName` | | A Secret holding the session digest key, so sessions correlate across replicas |
 | `capture.maxRequestBody`, `maxResponseBody`, `memoryBudget`, `queue` | `1MiB`, `1MiB`, `256MiB`, `1024` | Capture's bounds. See [architecture](architecture.md#capture). |
-| `capture.otlpEndpoint` | | Turns tracing on. See [observability](observability.md). |
+| `capture.otlpEndpoint` | | Turns tracing on. See [traces](#traces). |
 | `storage.persistentVolumeClaim.enabled` | `false` | Keep recordings on a claim instead of an emptyDir, which is lost with the pod |
 | `preStopSleepSeconds` | `5` | A pause before shutdown, so endpoints are removed before connections close |
 | `terminationGracePeriodSeconds` | `35` | Room for the pause and both of capture's shutdown phases |
@@ -65,7 +65,7 @@ helm install orders deploy/helm/replaydiff ... \
 ```
 
 With `capture.h2c`, the Service port declares `appProtocol: kubernetes.io/h2c`. See
-[protocols](protocols.md#grpc).
+[gRPC](architecture.md#grpc).
 
 ### Security
 
@@ -91,6 +91,85 @@ time to stop rather than killing it.
 Each pod records into a directory named after itself, under `/var/lib/replaydiff` in the
 traffic volume. With more than one replica on a ReadWriteOnce claim, the pods must share a
 node. Otherwise use ReadWriteMany, or one claim per replica.
+
+## Observability
+
+**No metric label, span attribute or log line holds traffic content.** Labels and attributes
+come from constants in the code, such as drop reasons and protocols, plus status codes. Paths
+aren't redacted, so they never appear either. Tests plant values in every location and check
+that none reaches a log or an exported span.
+
+### Metrics and health
+
+`capture --admin-listen ADDR`, which the chart sets from `capture.adminPort`, serves these on
+a port of their own, so probes and scrapes are never recorded:
+
+| Path | Purpose |
+|---|---|
+| `/metrics` | Prometheus metrics |
+| `/livez` | 200 while the process runs |
+| `/readyz` | 200 while the proxy accepts traffic. It turns 503 as shutdown begins, so a load balancer stops sending first. |
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `replaydiff_capture_exchanges_total` | Counter | | Exchanges the proxy forwarded |
+| `replaydiff_capture_records_persisted_total` | Counter | | Records written to storage |
+| `replaydiff_capture_records_dropped_total` | Counter | `reason` | Recordings dropped. Every reason is exported from zero. |
+| `replaydiff_capture_bodies_omitted_total` | Counter | `reason` | Bodies observed but not stored |
+| `replaydiff_capture_storage_sync_failures_total` | Counter | | Failed flushes to disk |
+| `replaydiff_capture_queue_depth` | Gauge | | Exchanges waiting to be recorded |
+| `replaydiff_capture_queue_capacity` | Gauge | | Queue size, beyond which recordings are dropped |
+| `replaydiff_capture_memory_budget_used_bytes` | Gauge | | Body bytes held |
+| `replaydiff_capture_memory_budget_bytes` | Gauge | | Body bytes allowed before bodies are omitted |
+| `replaydiff_capture_exchange_duration_seconds` | Histogram | `protocol` | From a request arriving to its response finishing, upstream time included |
+
+Go runtime and process metrics are exported too. The duration histogram includes the
+upstream's own time, so it isn't the overhead capture adds, which the
+[benchmarks](benchmarks.md) measure. `run` has no metrics, because its report is its output.
+
+```promql
+# Recordings are being dropped.
+sum by (reason) (rate(replaydiff_capture_records_dropped_total[5m])) > 0
+
+# The queue is close to full, so drops are near.
+replaydiff_capture_queue_depth / replaydiff_capture_queue_capacity > 0.8
+```
+
+[`deploy/grafana/replaydiff-capture.json`](../deploy/grafana/replaydiff-capture.json) is a
+Grafana dashboard of these metrics. Import it and choose a Prometheus data source. A test
+checks that it queries only metrics that exist, and every one of capture's.
+
+### Traces
+
+Tracing is off unless `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is
+set. The chart sets the first from `capture.otlpEndpoint`. Spans go over OTLP/HTTP, configured
+by the standard OpenTelemetry variables, and any not yet sent are flushed within five seconds
+when the process exits.
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318 OTEL_TRACES_SAMPLER=parentbased_traceidratio \
+OTEL_TRACES_SAMPLER_ARG=0.1 replaydiff capture ...
+```
+
+| Span | From | Attributes |
+|---|---|---|
+| `replaydiff capture` | capture, one per exchange its workers handle | `http.request.method`, `http.response.status_code`, `replaydiff.protocol`, `replaydiff.transport`, `replaydiff.capture.result` |
+| `replaydiff run` | `run` | `replaydiff.records`, `replaydiff.replayed`, `replaydiff.complete` |
+| `replaydiff replay record` | `run`, one per record | `replaydiff.record.id`, `http.request.method`, `replaydiff.protocol` |
+| `replaydiff replay call` | `run`, one per target call | `replaydiff.role`, `replaydiff.outcome`, `replaydiff.attempts`, `http.response.status_code`, `rpc.grpc.status_code` |
+
+`replaydiff.capture.result` is `recorded` once the record reaches the writer, and otherwise the
+reason it was dropped. A recording dropped because the queue was full has no span.
+
+Capture's span joins the client's trace when the request carries a `traceparent`. Capture
+still forwards every header unchanged, and doesn't carry a client's `tracestate` into its own
+span. Replay doesn't send recorded trace headers. With tracing on, each replayed call carries
+its own context, so a target's spans appear under the call that caused them.
+
+### Logs
+
+Capture logs to stderr through `log/slog`, at the level set by `--log-level`. `run` writes its
+summary to stdout and its warnings to stderr.
 
 ## Compose
 
