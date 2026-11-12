@@ -65,7 +65,7 @@ helm install orders deploy/helm/replaydiff ... \
 ```
 
 With `capture.h2c`, the Service port declares `appProtocol: kubernetes.io/h2c`. See
-[protocols](protocols.md#grpc).
+[gRPC](architecture.md#grpc).
 
 ### Security
 

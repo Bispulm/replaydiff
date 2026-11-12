@@ -108,7 +108,6 @@ policy, waivers and a GitHub Actions example.
 - [Traffic format](docs/traffic-format.md)
 - [Redaction](docs/redaction.md)
 - [Replay](docs/replay.md)
-- [Protocols](docs/protocols.md)
 - [Deployment and observability](docs/deployment.md)
 - [Benchmarks](docs/benchmarks.md)
 - [Comparison](docs/diffing.md)

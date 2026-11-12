@@ -101,7 +101,7 @@ The HTTP client can resend by itself in specific cases. Over HTTP/1.1 this is pr
 not reusing connections, so each call opens a new one, and all three targets pay that cost
 equally. Its effect on latency and maximum replay rate hasn't been measured yet. Over
 HTTP/2 it can't be prevented when a server says it didn't process a request, so those
-resends are counted and reported. See [protocols](protocols.md#resends).
+resends are counted and reported. See [resends](architecture.md#resends).
 
 ## Credentials
 
@@ -145,7 +145,7 @@ its policy allows them.
 
 ## Current limits
 
-- Only unary gRPC is replayed. Protocols are described in [protocols](protocols.md).
+- Only unary gRPC is replayed. Protocols are described in [architecture](architecture.md#protocols).
 - Request trailers in a recording aren't sent.
 - The report's samples include request paths, which redaction doesn't cover. See
   [redaction limits](redaction.md#known-limits).
