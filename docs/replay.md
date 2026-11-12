@@ -26,7 +26,7 @@ replaydiff run --traffic ./traffic --report report.json --redact redact.yaml \
   `Host`, `Forwarded` and `X-Forwarded-*` from the recording are not sent.
 - Recorded `traceparent`, `tracestate` and `baggage` are not sent, since they belong to
   the production call the record came from. With tracing on, each call carries replay's
-  own trace context instead. See [observability](observability.md).
+  own trace context instead. See [traces](deployment.md#traces).
 - Redirects are never followed. A 3xx response is recorded as the result.
 - Proxy environment variables such as `HTTP_PROXY` are ignored.
 

@@ -68,8 +68,8 @@ helm install orders deploy/helm/replaydiff --set app.image.repository=registry.e
 make compose-up    # a local stack with Prometheus and Grafana on 127.0.0.1:18200-18209
 ```
 
-See [deployment](docs/deployment.md) for the chart's values, shutdown, storage and replaying from
-a Job, and [observability](docs/observability.md) for metrics, traces and the dashboard.
+See [deployment](docs/deployment.md) for the chart's values, shutdown, storage, replaying from a
+Job, and metrics, traces and the dashboard.
 
 ## Using it in CI
 
@@ -109,8 +109,7 @@ policy, waivers and a GitHub Actions example.
 - [Redaction](docs/redaction.md)
 - [Replay](docs/replay.md)
 - [Protocols](docs/protocols.md)
-- [Deployment](docs/deployment.md)
-- [Observability](docs/observability.md)
+- [Deployment and observability](docs/deployment.md)
 - [Benchmarks](docs/benchmarks.md)
 - [Comparison](docs/diffing.md)
 - [CI gate](docs/ci.md)
