@@ -62,17 +62,3 @@ yet. Benchmarks are planned.
 If a write is stuck in the OS when the deadline passes, `Close` returns and the process
 exits non-zero. A goroutine blocked in that write can't be interrupted, and it exits
 when the write returns.
-
-## Documents
-
-- [Traffic format](traffic-format.md)
-- [Redaction](redaction.md)
-- [Replay](replay.md)
-- [Protocols](protocols.md)
-- [Deployment](deployment.md)
-- [Observability](observability.md)
-- [Comparison](diffing.md)
-- [CI gate](ci.md)
-- [Fixtures](fixtures.md)
-- [Related tools](related-tools.md)
-- [Decision records](adr/)
